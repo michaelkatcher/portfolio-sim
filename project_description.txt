@@ -1,0 +1,59 @@
+Goal:
+- Building a portfolio simulator for a merchant cash advance funder in Python
+
+Input Data:
+- Our inputs are the historical list of funded deals and their performance to date. 
+
+Features:
+- Select a subset of deals based on a number of different criteria (deal product type, deal grade, deal size, deal vintage) 
+- Given an allocation policy, generate a series of cashflows that would flow from this subset based on historical performance. Allocation policy ex: portfolio takes 25% of each deal with a minimum of $100,000 per deal and a maximum of $1,500,000 per deals, so: MAX(100000,MIN(1500000,0.25*DealSize))
+- Calculate the performance of this portfolio of cashflows
+- Add management fees to the portfolio and calculate the post fee performance (i.e. a servicing fee of 2% of every incoming cashflow on a deal after principal repayment). This will be generated as an additional line item in cashflows
+
+Output:
+- An Excel file with the following tabs:
+ (1) 'Portfolio Scenario' - Lays out all of the selection criteria, fees, etc. for the portfolio
+ (2) 'Cashflows' - A list of each individual cashflow in the portfolio
+ (3) 'Deals' - A list of each individual deal in the portfolio
+ (4) 'Analysis' - Calculation of IRR and MOIC for the portfolio as a whole and for each monthly vintage (a vintage is any deal that was funded in a given month)
+ 
+Input Data Detail:
+
+File #1: payments.csv
+Columns - Explanation
+Vintage - The year and quarter that a deal was funded (i.e. 2024-Q1)
+Vintage-M - The year and month a deal was funded  (i.e. 2024-01)
+Funded ID - The unique identifier for a deal
+Funded Date - The date a deal was first funded
+Transaction Date - The date of a given cashflow
+Transaction Amount - The amount of a given cashflow
+Libertas Transaction Amount - Can ignore this column; we won't be using this for now
+Transaction Description - The cashflow type; meaning of various types listed below
+Deal Size
+Product
+
+Transaction Description Types:
+Initial cash outlay - The initial funding of a deal, plus commissions
+Merchant remittance - An incoming cashflow from a merchant on a deal
+Management fee revenue - Can ignore this column; we won't be using this for now
+Renewal or discounted payoff adjustment - An incoming cashflow from a merchant on a deal
+Refund - An incoming cashflow from a merchant on a deal
+
+File #2: data.csv
+Rows - Explanation
+Row 1 - This is a 'category' column. Each column can be one of a couple different categories. You can ignore Row #1
+Row 2 - This is the column name
+Rows 3 to X - These are the individual line items for each unique deal
+
+Columns - Explanation [Note: this file has many dozens of columns; ignore all columns not explained below]
+Funded ID - The unique identifier for a deal
+Product - Internal product type for a given deal
+Initial Funding Date - The date that a deal was funded
+Credit_Tier - The deal grade
+Total Original Balance - The funded amount for a deal, like the deal principal
+Total Original RTR - The total amount the merchant owes on the deal
+Total Actual Payback Amount - The total amount of cash the merchant paid back on the deal
+Total Amount Carried Over Into New Deal - The total amount of the deal that was rolled into a new deal
+Past Due Amount - The total amount expected to be collected to date on a deal less the total amount actually collected
+Total Principal Net Charge Off - The total amount of principal charged off on a deal net of any recoveries
+
