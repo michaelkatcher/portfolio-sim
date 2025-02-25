@@ -14,8 +14,11 @@ import logging
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment, numbers
 from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.utils import get_column_letter
+from openpyxl.formula.translate import Translator
 
 from common_utils import setup_logging, ExportError
+from constants import DEAL_COLUMNS, PAYMENT_COLUMNS
 
 # Set up logger
 logger = setup_logging(__name__)
@@ -65,10 +68,11 @@ def export_portfolio_to_excel(portfolio, filename, verbose=False):
         default_sheet = wb.active
         wb.remove(default_sheet)
         
-        # Create each sheet
-        _create_portfolio_scenario_sheet(wb, portfolio)
-        _create_cashflows_sheet(wb, portfolio)
+        # Create each sheet - order matters for formulas
         _create_deals_sheet(wb, portfolio)
+        _create_cashflows_sheet(wb, portfolio)
+        # Portfolio scenario sheet must be created last since it references other sheets
+        _create_portfolio_scenario_sheet(wb, portfolio)
         
         # Save the workbook
         wb.save(filename)
@@ -192,11 +196,27 @@ def _format_date_cell(cell, value, date_format='yyyy-mm-dd'):
         cell.value = value  # At least set the value even if formatting fails
         return cell
 
+
 def _format_boolean_cell(cell, value):
-    """Format a cell as a Yes/No boolean value."""
-    cell.value = "Yes" if value else "No"
-    cell.alignment = Alignment(horizontal='center')
-    return cell
+    """
+    Format a cell as a Yes/No boolean value.
+    
+    Args:
+        cell: Cell object to format
+        value: Boolean value
+    
+    Returns:
+        The formatted cell
+    """
+    try:
+        cell.value = "Yes" if value else "No"
+        cell.alignment = Alignment(horizontal='center')
+        return cell
+    except Exception as e:
+        logger.warning(f"Error formatting boolean cell: {str(e)}")
+        cell.value = "Yes" if value else "No"  # At least set the value even if formatting fails
+        return cell
+
 
 def _add_section_header(ws, row, text, span=2):
     """
@@ -229,7 +249,7 @@ def _add_section_header(ws, row, text, span=2):
         return row + 1  # Return next row anyway to continue
 
 
-def _add_label_value_row(ws, row, label, value, value_format=None):
+def _add_label_value_row(ws, row, label, value=None, value_format=None, formula=None):
     """
     Add a label-value pair row to a worksheet.
     
@@ -237,8 +257,9 @@ def _add_label_value_row(ws, row, label, value, value_format=None):
         ws: Worksheet object
         row: Row number
         label: Label for column A
-        value: Value for column B
+        value: Value for column B (None if using formula)
         value_format: Optional function to format the value cell
+        formula: Optional Excel formula string instead of value
     
     Returns:
         Next available row number
@@ -248,7 +269,10 @@ def _add_label_value_row(ws, row, label, value, value_format=None):
         
         value_cell = ws.cell(row=row, column=2)
         
-        if value_format:
+        # If formula is provided, use it instead of value
+        if formula:
+            value_cell.value = formula
+        elif value_format:
             value_format(value_cell, value)
         else:
             value_cell.value = value
@@ -327,8 +351,8 @@ def _create_table_from_df(ws, df, start_row, columns=None, formats=None, include
                         formats[col_name](cell, total)
                 
                 # Calculate weighted average for percentage columns
-                elif col_name == 'Commission Cost %' and 'Total Original Balance' in df.columns:
-                    weighted_avg = (df['Commission Cost %'] * df['Total Original Balance']).sum() / df['Total Original Balance'].sum()
+                elif col_name == DEAL_COLUMNS['COMMISSION'] and DEAL_COLUMNS['BALANCE'] in df.columns:
+                    weighted_avg = (df[DEAL_COLUMNS['COMMISSION']] * df[DEAL_COLUMNS['BALANCE']]).sum() / df[DEAL_COLUMNS['BALANCE']].sum()
                     cell = ws.cell(row=current_row, column=col_idx)
                     _format_percent_cell(cell, weighted_avg)
                     cell.font = Font(bold=True)
@@ -436,15 +460,35 @@ def _create_portfolio_scenario_sheet(wb, portfolio):
             row += 1
             row = _add_section_header(ws, row, "Portfolio Summary")
             
-            # Total Deals
-            row = _add_label_value_row(ws, row, "Total Deals", len(portfolio.deal_allocations))
+            # Total Deals - using formula that counts rows in Deals sheet (excluding header)
+            deals_formula = "=COUNTA(Deals!A:A)-1"
+            row = _add_label_value_row(ws, row, "Total Deals", formula=deals_formula)
             
-            # Total Allocated Amount
-            total_allocation = portfolio.deal_allocations['Allocation Amount'].sum()
-            row = _add_label_value_row(
-                ws, row, "Total Allocated Amount", total_allocation, 
-                value_format=_format_money_cell
-            )
+            # Total Allocated Amount - using formula that sums the Allocation Amount column in Deals sheet
+            # First, find the column with Allocation Amount in the Deals sheet
+            deals_sheet = wb["Deals"]
+            allocation_col = None
+            for col in range(1, deals_sheet.max_column + 1):
+                if deals_sheet.cell(row=1, column=col).value == "Allocation Amount":
+                    allocation_col = get_column_letter(col)
+                    break
+            
+            if allocation_col:
+                # SUM formula using the found column
+                allocation_formula = f"=SUM(Deals!{allocation_col}:{allocation_col})"
+                row = _add_label_value_row(
+                    ws, row, "Total Allocated Amount", 
+                    formula=allocation_formula
+                )
+                # Apply currency formatting
+                ws.cell(row=row-1, column=2).number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
+            else:
+                # Fallback to hardcoded value if column not found
+                total_allocation = portfolio.deal_allocations['Allocation Amount'].sum()
+                row = _add_label_value_row(
+                    ws, row, "Total Allocated Amount", total_allocation, 
+                    value_format=_format_money_cell
+                )
         
         return ws
         
@@ -486,25 +530,25 @@ def _create_cashflows_sheet(wb, portfolio):
         })
         
         # Define columns to include
-        columns = ['Transaction Date', 'Funded ID', 'Transaction Description', 
-                'Portfolio Amount', 'Fee Amount', 'Net Amount', 'Principal Repaid']
+        columns = [PAYMENT_COLUMNS['DATE'], PAYMENT_COLUMNS['ID'], PAYMENT_COLUMNS['DESCRIPTION'], 
+                  'Portfolio Amount', 'Fee Amount', 'Net Amount', 'Principal Repaid']
         
         # Prepare cashflow data
         cf_data = portfolio.cashflows.copy()
         
         # Sort by Transaction Date
-        cf_data = cf_data.sort_values('Transaction Date')
+        cf_data = cf_data.sort_values(PAYMENT_COLUMNS['DATE'])
         
         # Convert dates to strings for Excel
-        cf_data['Transaction Date'] = cf_data['Transaction Date'].dt.strftime('%Y-%m-%d')
+        cf_data[PAYMENT_COLUMNS['DATE']] = cf_data[PAYMENT_COLUMNS['DATE']].dt.strftime('%Y-%m-%d')
         
         # Define column formats
         formats = {
-            'Transaction Date': lambda cell, value: _format_date_cell(cell, value),
+            PAYMENT_COLUMNS['DATE']: lambda cell, value: _format_date_cell(cell, value),
             'Portfolio Amount': _format_money_cell,
             'Fee Amount': _format_money_cell,
             'Net Amount': _format_money_cell,
-            'Principal Repaid': _format_boolean_cell  # Use the new helper function
+            'Principal Repaid': _format_boolean_cell
         }
         
         # Create the table
@@ -514,7 +558,7 @@ def _create_cashflows_sheet(wb, portfolio):
             start_row=1,
             columns=columns,
             formats=formats,
-            include_totals=True
+            include_totals=False
         )
         
         return ws
@@ -561,8 +605,8 @@ def _create_deals_sheet(wb, portfolio):
         
         # Define columns to include
         columns = [
-            'Funded ID', 'Product', 'Initial Funding Date', 'Credit_Tier', 
-            'Total Original Balance', 'Total Original RTR', 'Commission Cost %',
+            DEAL_COLUMNS['ID'], DEAL_COLUMNS['PRODUCT'], DEAL_COLUMNS['FUNDING_DATE'], DEAL_COLUMNS['CREDIT_TIER'], 
+            DEAL_COLUMNS['BALANCE'], DEAL_COLUMNS['RTR'], DEAL_COLUMNS['COMMISSION'],
             'Allocation Amount', 'Allocation Percentage', 'Allocated RTR'
         ]
         
@@ -570,19 +614,19 @@ def _create_deals_sheet(wb, portfolio):
         deal_data = portfolio.deal_allocations.copy()
         
         # Sort by Initial Funding Date if available
-        if 'Initial Funding Date' in deal_data.columns:
-            deal_data = deal_data.sort_values('Initial Funding Date')
+        if DEAL_COLUMNS['FUNDING_DATE'] in deal_data.columns:
+            deal_data = deal_data.sort_values(DEAL_COLUMNS['FUNDING_DATE'])
             # Convert dates to strings for Excel
-            deal_data['Initial Funding Date'] = deal_data['Initial Funding Date'].dt.strftime('%Y-%m-%d')
+            deal_data[DEAL_COLUMNS['FUNDING_DATE']] = deal_data[DEAL_COLUMNS['FUNDING_DATE']].dt.strftime('%Y-%m-%d')
         
         # Define column formats
         formats = {
-            'Initial Funding Date': lambda cell, value: _format_date_cell(cell, value),
-            'Total Original Balance': _format_money_cell,
-            'Total Original RTR': _format_money_cell,
+            DEAL_COLUMNS['FUNDING_DATE']: lambda cell, value: _format_date_cell(cell, value),
+            DEAL_COLUMNS['BALANCE']: _format_money_cell,
+            DEAL_COLUMNS['RTR']: _format_money_cell,
             'Allocation Amount': _format_money_cell,
             'Allocation Percentage': _format_percent_cell,
-            'Commission Cost %': _format_percent_cell,
+            DEAL_COLUMNS['COMMISSION']: _format_percent_cell,
             'Allocated RTR': _format_money_cell
         }
         
@@ -593,7 +637,7 @@ def _create_deals_sheet(wb, portfolio):
             start_row=1,
             columns=columns,
             formats=formats,
-            include_totals=True
+            include_totals=False
         )
         
         return ws
