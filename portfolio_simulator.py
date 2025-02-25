@@ -462,7 +462,7 @@ class Portfolio:
             verbose: Whether to print detailed information
         """
         # Select required columns for the cashflows dataframe
-        self.cashflows = deal_payments[[PAYMENT_COLUMNS['ID'], PAYMENT_COLUMNS['DATE'], PAYMENT_COLUMNS['DESCRIPTION'], 
+        self.cashflows = deal_payments[[PAYMENT_COLUMNS['ID'], PAYMENT_COLUMNS['FUNDED DATE'], PAYMENT_COLUMNS['DATE'], PAYMENT_COLUMNS['DESCRIPTION'], 
                                       'Portfolio Amount', 'Fee Amount', 'Net Amount', 'Principal Repaid']]
         
         if verbose:

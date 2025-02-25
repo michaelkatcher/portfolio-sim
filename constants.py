@@ -22,6 +22,7 @@ DEAL_COLUMNS = {
 PAYMENT_COLUMNS = {
     'ID': 'Funded ID',
     'DATE': 'Transaction Date',
+    'FUNDED DATE': 'Funded Date',
     'AMOUNT': 'Transaction Amount',
     'DESCRIPTION': 'Transaction Description',
     'VINTAGE_MONTH': 'Vintage-M',

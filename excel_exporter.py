@@ -171,25 +171,23 @@ def _format_percent_cell(cell, value):
         return cell
 
 
-def _format_date_cell(cell, value, date_format='yyyy-mm-dd'):
+def _format_date_cell(cell, value):
     """
     Format a cell as date.
     
     Args:
         cell: Cell object to format
-        value: Value to set (datetime or string)
-        date_format: Excel date format
+        value: Value to set (datetime object or string)
     
     Returns:
         The formatted cell
     """
     try:
-        # Convert datetime to string if needed
-        if isinstance(value, datetime):
-            value = value.strftime('%Y-%m-%d')
-        
+        # Important: Pass the datetime object directly to Excel 
+        # rather than converting to string first
         cell.value = value
-        cell.number_format = date_format
+        # Use Excel's built-in date format
+        cell.number_format = 'yyyy-mm-dd'
         return cell
     except Exception as e:
         logger.warning(f"Error formatting date cell: {str(e)}")
@@ -281,6 +279,30 @@ def _add_label_value_row(ws, row, label, value=None, value_format=None, formula=
     except Exception as e:
         logger.warning(f"Error adding label-value row: {str(e)}")
         return row + 1  # Return next row anyway to continue
+
+
+def _get_monthly_vintages(portfolio):
+    """
+    Extract unique monthly vintages from a portfolio.
+    
+    Args:
+        portfolio: Portfolio instance with deal_allocations
+        
+    Returns:
+        List of vintage months sorted chronologically
+    """
+    try:
+        if portfolio.deal_allocations is None or DEAL_COLUMNS['FUNDING_DATE'] not in portfolio.deal_allocations.columns:
+            return []
+            
+        # Extract month from funding date
+        monthly_vintages = portfolio.deal_allocations[DEAL_COLUMNS['FUNDING_DATE']].dt.strftime('%Y-%m').unique()
+        
+        # Sort chronologically
+        return sorted(monthly_vintages)
+    except Exception as e:
+        logger.warning(f"Error extracting monthly vintages: {str(e)}")
+        return []
 
 
 def _create_table_from_df(ws, df, start_row, columns=None, formats=None, include_totals=False):
@@ -464,15 +486,31 @@ def _create_portfolio_scenario_sheet(wb, portfolio):
             deals_formula = "=COUNTA(Deals!A:A)-1"
             row = _add_label_value_row(ws, row, "Total Deals", formula=deals_formula)
             
-            # Total Allocated Amount - using formula that sums the Allocation Amount column in Deals sheet
-            # First, find the column with Allocation Amount in the Deals sheet
+            # Find columns for use in formulas
+            cashflows_sheet = wb["Cashflows"]
             deals_sheet = wb["Deals"]
+            
+            # Find allocation amount column in Deals sheet
             allocation_col = None
             for col in range(1, deals_sheet.max_column + 1):
                 if deals_sheet.cell(row=1, column=col).value == "Allocation Amount":
                     allocation_col = get_column_letter(col)
                     break
-            
+                    
+            # Find portfolio amount, transaction date and funded date columns in Cashflows sheet
+            portfolio_amt_col = None
+            date_col = None
+            funded_dt_col = None
+            for col in range(1, cashflows_sheet.max_column + 1):
+                header = cashflows_sheet.cell(row=1, column=col).value
+                if header == "Portfolio Amount":
+                    portfolio_amt_col = get_column_letter(col)
+                elif header == "Transaction Date":
+                    date_col = get_column_letter(col)
+                elif header == "Funded Date":
+                    funded_dt_col = get_column_letter(col)
+                    
+            # Total Allocated Amount formula
             if allocation_col:
                 # SUM formula using the found column
                 allocation_formula = f"=SUM(Deals!{allocation_col}:{allocation_col})"
@@ -489,6 +527,56 @@ def _create_portfolio_scenario_sheet(wb, portfolio):
                     ws, row, "Total Allocated Amount", total_allocation, 
                     value_format=_format_money_cell
                 )
+            
+            # Add IRR formula if we have cashflow data with dates
+            if portfolio_amt_col and date_col:
+                # IRR formula using XIRR
+                irr_formula = f"=XIRR(OFFSET(Cashflows!{portfolio_amt_col}$1,1,0,COUNTA(Cashflows!{portfolio_amt_col}:{portfolio_amt_col})-1),OFFSET(Cashflows!{date_col}$1,1,0,COUNTA(Cashflows!{portfolio_amt_col}:{portfolio_amt_col})-1))"
+                row = _add_label_value_row(ws, row, "IRR", formula=irr_formula)
+                # Format as percentage
+                ws.cell(row=row-1, column=2).number_format = "0.00%"
+                
+                # MOIC formula 
+                moic_formula = f"=SUMIFS(Cashflows!{portfolio_amt_col}:{portfolio_amt_col},Cashflows!{portfolio_amt_col}:{portfolio_amt_col},\">0\")/-SUMIFS(Cashflows!{portfolio_amt_col}:{portfolio_amt_col},Cashflows!{portfolio_amt_col}:{portfolio_amt_col},\"<0\")"
+                row = _add_label_value_row(ws, row, "MOIC", formula=moic_formula)
+                # Format as number with 2 decimal places
+                ws.cell(row=row-1, column=2).number_format = "0.00x"
+            
+            # Add Monthly MOICs section if we have vintage data
+            monthly_vintages = _get_monthly_vintages(portfolio)
+            if monthly_vintages and portfolio_amt_col and DEAL_COLUMNS['FUNDING_DATE'] in portfolio.deal_allocations.columns:
+                row += 1
+                row = _add_section_header(ws, row, "Monthly MOICs")
+                
+                # Add a formula for each monthly vintage
+                for vintage in monthly_vintages:
+                    # The formula identifies deals from the specific vintage
+                    # and calculates the MOIC as (positive cashflows) / abs(negative cashflows)
+                    
+                    # For Excel: Get the first day of the vintage month as string
+                    year, month = vintage.split('-')
+                    first_day = f"{year}-{month}-01"
+                    last_day = f"{year}-{month}-31"  # Using 31 to cover all possible month lengths
+                    
+                    # Simplified formula for Excel 2019 which doesn't support FILTER
+                    vintage_formula = (
+                        f"=SUMIFS(Cashflows!{portfolio_amt_col}:{portfolio_amt_col},"
+                        f"Cashflows!{funded_dt_col}:{funded_dt_col},"
+                            f"\">=\"&DATE(LEFT(A{row},4),RIGHT(A{row},2),1),"
+                        f"Cashflows!{funded_dt_col}:{funded_dt_col},"
+                            f"\"<=\"&DATE(LEFT(A{row},4),RIGHT(A{row},2)+1,1)-1,"
+                        f"Cashflows!{portfolio_amt_col}:{portfolio_amt_col},\">0\")/"
+                        f"ABS(SUMIFS(Cashflows!{portfolio_amt_col}:{portfolio_amt_col},"
+                        f"Cashflows!{funded_dt_col}:{funded_dt_col},"
+                            f"\">=\"&DATE(LEFT(A{row},4),RIGHT(A{row},2),1),"
+                        f"Cashflows!{funded_dt_col}:{funded_dt_col},"
+                            f"\"<=\"&DATE(LEFT(A{row},4),RIGHT(A{row},2)+1,1)-1,"
+                        f"Cashflows!{portfolio_amt_col}:{portfolio_amt_col},\"<0\"))"
+                    )
+                    
+                    # Add the formula with the vintage label
+                    row = _add_label_value_row(ws, row, f"{vintage}", formula=vintage_formula)
+                    ws.cell(row=row-1, column=2).number_format = "0.00x"
         
         return ws
         
@@ -521,16 +609,17 @@ def _create_cashflows_sheet(wb, portfolio):
         # Set column widths
         _set_column_widths(ws, {
             'A': 15,  # Transaction Date
-            'B': 15,  # Funded ID
-            'C': 30,  # Transaction Description
-            'D': 15,  # Portfolio Amount
-            'E': 15,  # Fee Amount
-            'F': 15,  # Net Amount
-            'G': 10,  # Principal Repaid
+            'B': 15,  # Funded Date
+            'C': 15,  # Funded ID
+            'D': 30,  # Transaction Description
+            'E': 15,  # Portfolio Amount
+            'F': 15,  # Fee Amount
+            'G': 15,  # Net Amount
+            'H': 10,  # Principal Repaid
         })
         
         # Define columns to include
-        columns = [PAYMENT_COLUMNS['DATE'], PAYMENT_COLUMNS['ID'], PAYMENT_COLUMNS['DESCRIPTION'], 
+        columns = [PAYMENT_COLUMNS['DATE'], PAYMENT_COLUMNS['FUNDED DATE'], PAYMENT_COLUMNS['ID'], PAYMENT_COLUMNS['DESCRIPTION'], 
                   'Portfolio Amount', 'Fee Amount', 'Net Amount', 'Principal Repaid']
         
         # Prepare cashflow data
@@ -539,12 +628,10 @@ def _create_cashflows_sheet(wb, portfolio):
         # Sort by Transaction Date
         cf_data = cf_data.sort_values(PAYMENT_COLUMNS['DATE'])
         
-        # Convert dates to strings for Excel
-        cf_data[PAYMENT_COLUMNS['DATE']] = cf_data[PAYMENT_COLUMNS['DATE']].dt.strftime('%Y-%m-%d')
-        
-        # Define column formats
+        # Define column formats - IMPORTANT: Don't convert dates to strings for Excel
         formats = {
-            PAYMENT_COLUMNS['DATE']: lambda cell, value: _format_date_cell(cell, value),
+            PAYMENT_COLUMNS['DATE']: _format_date_cell,  
+            PAYMENT_COLUMNS['FUNDED DATE']: _format_date_cell,  
             'Portfolio Amount': _format_money_cell,
             'Fee Amount': _format_money_cell,
             'Net Amount': _format_money_cell,
@@ -616,12 +703,10 @@ def _create_deals_sheet(wb, portfolio):
         # Sort by Initial Funding Date if available
         if DEAL_COLUMNS['FUNDING_DATE'] in deal_data.columns:
             deal_data = deal_data.sort_values(DEAL_COLUMNS['FUNDING_DATE'])
-            # Convert dates to strings for Excel
-            deal_data[DEAL_COLUMNS['FUNDING_DATE']] = deal_data[DEAL_COLUMNS['FUNDING_DATE']].dt.strftime('%Y-%m-%d')
         
-        # Define column formats
+        # Define column formats - IMPORTANT: Don't convert dates to strings for Excel
         formats = {
-            DEAL_COLUMNS['FUNDING_DATE']: lambda cell, value: _format_date_cell(cell, value),
+            DEAL_COLUMNS['FUNDING_DATE']: _format_date_cell,  # Pass datetime objects directly
             DEAL_COLUMNS['BALANCE']: _format_money_cell,
             DEAL_COLUMNS['RTR']: _format_money_cell,
             'Allocation Amount': _format_money_cell,
