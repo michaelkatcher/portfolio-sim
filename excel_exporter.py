@@ -578,6 +578,66 @@ def _create_portfolio_scenario_sheet(wb, portfolio):
                     row = _add_label_value_row(ws, row, f"{vintage}", formula=vintage_formula)
                     ws.cell(row=row-1, column=2).number_format = "0.00x"
         
+            # Add Portfolio History table to the right of the main content
+            # This should be added near the end of _create_portfolio_scenario_sheet function
+            # Before the final "return ws" statement
+
+            # Set column widths for Portfolio History columns
+            ws.column_dimensions['D'].width = 15  # Date
+            ws.column_dimensions['E'].width = 25  # Funded
+            ws.column_dimensions['F'].width = 25  # Balance
+
+            # Add Portfolio History header (merged across columns D-F)
+            history_header_row = 3
+            ws.cell(row=history_header_row, column=4, value="Portfolio History")
+            ws.cell(row=history_header_row, column=4).font = Font(bold=True)
+            ws.cell(row=history_header_row, column=4).fill = PatternFill("solid", fgColor="D9D9D9")
+            ws.merge_cells(start_row=history_header_row, start_column=4, end_row=history_header_row, end_column=6)
+            ws.cell(row=history_header_row, column=4).alignment = Alignment(horizontal='center')
+
+            # Add column headers
+            header_row = history_header_row + 1
+            ws.cell(row=header_row, column=4, value="Date").font = Font(bold=True)
+            ws.cell(row=header_row, column=5, value="Funded").font = Font(bold=True)
+            ws.cell(row=header_row, column=6, value="Balance").font = Font(bold=True)
+
+            # Determine start date (from vintage_range if available, otherwise use a default)
+            if portfolio.selection_criteria.get('vintage_range'):
+                start_date, _ = portfolio.selection_criteria['vintage_range']
+                if isinstance(start_date, str):
+                    start_date = pd.to_datetime(start_date)
+            else:
+                # Default start date (one month before current date)
+                start_date = datetime.now().replace(day=1) - pd.DateOffset(months=1)
+
+            # Generate rows for each month
+            for i in range(len(monthly_vintages)):
+                # Calculate EOMONTH for the current month
+                current_row = header_row + 1 + i
+                date_cell = ws.cell(row=current_row, column=4)
+                
+                # First cell uses direct date formula
+                if i == 0:
+                    date_formula = f"=EOMONTH(DATE({start_date.year},{start_date.month},1),0)"
+                else:
+                    # Subsequent cells reference the cell above
+                    date_formula = f"=EOMONTH(D{current_row-1},1)"
+                
+                date_cell.value = date_formula
+                date_cell.number_format = "m/d/yyyy"
+                
+                # Funded formula (sum of allocations by month)
+                funded_cell = ws.cell(row=current_row, column=5)
+                funded_formula = f"=SUMIFS(Deals!$G:$G,Deals!$C:$C,\">=\"&DATE(YEAR(D{current_row}),MONTH(D{current_row}),1),Deals!$C:$C,\"<=\"&D{current_row})"
+                funded_cell.value = funded_formula
+                funded_cell.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
+                
+                # Balance formula (sum of cashflow amounts as of date)
+                balance_cell = ws.cell(row=current_row, column=6)
+                balance_formula = f"=-SUMIFS(Cashflows!$E:$E,Cashflows!$A:$A,\"<=\"&$D{current_row})"
+                balance_cell.value = balance_formula
+                balance_cell.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
+            
         return ws
         
     except Exception as e:
