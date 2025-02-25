@@ -9,7 +9,14 @@ allocation policies, and fee schedules.
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import logging
+
 from deal_selector import select_deals, validate_selection_criteria
+from common_utils import setup_logging, SimulationError, ConfigurationError
+from constants import DEAL_COLUMNS, PAYMENT_COLUMNS, TRANSACTION_TYPES, PORTFOLIO, VALIDATION
+
+# Set up logger
+logger = setup_logging(__name__)
 
 
 class AllocationPolicy:
@@ -23,9 +30,22 @@ class AllocationPolicy:
             percentage: Percentage of each deal to allocate (0.0 to 1.0)
             min_amount: Minimum allocation amount (or None for no minimum)
             max_amount: Maximum allocation amount (or None for no maximum)
+            
+        Raises:
+            ConfigurationError: If percentage is not in the valid range
         """
+        # Validate inputs
         if percentage <= 0 or percentage > 1:
-            raise ValueError("Percentage must be greater than 0 and less than or equal to 1")
+            raise ConfigurationError("Allocation percentage must be greater than 0 and less than or equal to 1")
+        
+        if min_amount is not None and min_amount < 0:
+            raise ConfigurationError("Minimum allocation amount cannot be negative")
+            
+        if max_amount is not None and max_amount < 0:
+            raise ConfigurationError("Maximum allocation amount cannot be negative")
+            
+        if min_amount is not None and max_amount is not None and min_amount > max_amount:
+            raise ConfigurationError("Minimum allocation amount cannot be greater than maximum")
         
         self.percentage = percentage
         self.min_amount = min_amount
@@ -41,6 +61,10 @@ class AllocationPolicy:
         Returns:
             Allocation amount
         """
+        if deal_size <= 0:
+            logger.warning(f"Received non-positive deal size: {deal_size}. Using 0 allocation.")
+            return 0
+            
         allocation = deal_size * self.percentage
         
         if self.min_amount is not None:
@@ -74,9 +98,13 @@ class FeeSchedule:
         Args:
             percentage: Fee percentage to apply to cashflows (0.0 to 1.0)
             apply_after_principal: Whether to apply fees only after principal is repaid
+            
+        Raises:
+            ConfigurationError: If percentage is not in the valid range
         """
-        if percentage < 0 or percentage > 1:
-            raise ValueError("Fee percentage must be between 0 and 1")
+        # Validate input
+        if percentage < VALIDATION['FEE_MIN'] or percentage > VALIDATION['FEE_MAX']:
+            raise ConfigurationError(f"Fee percentage must be between {VALIDATION['FEE_MIN']} and {VALIDATION['FEE_MAX']}")
         
         self.percentage = percentage
         self.apply_after_principal = apply_after_principal
@@ -119,7 +147,7 @@ class Portfolio:
     """Represents a simulated MCA portfolio."""
     
     def __init__(self, name, selection_criteria=None, allocation_policy=None, fee_schedule=None, 
-                seasoned_date='2024-01-31'):
+                seasoned_date=PORTFOLIO['DEFAULT_SEASONED_DATE']):
         """
         Initialize a portfolio.
         
@@ -129,18 +157,42 @@ class Portfolio:
             allocation_policy: AllocationPolicy instance
             fee_schedule: FeeSchedule instance
             seasoned_date: Date to use for seasoned metrics (deals funded before this date)
+            
+        Raises:
+            ConfigurationError: If inputs are invalid
         """
+        # Validate inputs
+        if not name:
+            raise ConfigurationError("Portfolio name cannot be empty")
+        
+        # Convert date string to datetime if needed
+        try:
+            self.seasoned_date = pd.to_datetime(seasoned_date)
+        except Exception as e:
+            raise ConfigurationError(f"Invalid seasoned date format: {e}")
+        
         self.name = name
         self.selection_criteria = selection_criteria or {}
-        self.allocation_policy = allocation_policy or AllocationPolicy()
-        self.fee_schedule = fee_schedule or FeeSchedule()
-        self.seasoned_date = pd.to_datetime(seasoned_date)
+        
+        # Use provided policy or create default
+        if allocation_policy is None:
+            allocation_policy = AllocationPolicy()
+        elif not isinstance(allocation_policy, AllocationPolicy):
+            raise ConfigurationError("allocation_policy must be an instance of AllocationPolicy")
+            
+        # Use provided schedule or create default
+        if fee_schedule is None:
+            fee_schedule = FeeSchedule()
+        elif not isinstance(fee_schedule, FeeSchedule):
+            raise ConfigurationError("fee_schedule must be an instance of FeeSchedule")
+        
+        self.allocation_policy = allocation_policy
+        self.fee_schedule = fee_schedule
         
         # These will be populated during simulation
         self.selected_deals = None
         self.deal_allocations = None
         self.cashflows = None
-        self.metrics = None
     
     def simulate(self, deals_df, payments_df, verbose=False):
         """
@@ -153,406 +205,317 @@ class Portfolio:
             
         Returns:
             self (for method chaining)
+            
+        Raises:
+            SimulationError: If the simulation fails
+            ValueError: If input data is invalid
         """
-        if verbose:
-            print(f"Simulating portfolio: {self.name}")
-            print(f"Selection criteria: {self.selection_criteria}")
-            print(f"Allocation policy: {self.allocation_policy}")
-            print(f"Fee schedule: {self.fee_schedule}")
+        # Validate input dataframes
+        if not isinstance(deals_df, pd.DataFrame) or deals_df.empty:
+            raise ValueError("deals_df must be a non-empty pandas DataFrame")
+            
+        if not isinstance(payments_df, pd.DataFrame) or payments_df.empty:
+            raise ValueError("payments_df must be a non-empty pandas DataFrame")
         
-        # Step 1: Select deals based on criteria
-        self.selected_deals = select_deals(deals_df, **self.selection_criteria, verbose=verbose)
+        # Verify required columns
+        required_deal_cols = [DEAL_COLUMNS['ID'], DEAL_COLUMNS['BALANCE'], DEAL_COLUMNS['RTR']]
+        required_payment_cols = [PAYMENT_COLUMNS['ID'], PAYMENT_COLUMNS['DATE'], 
+                                PAYMENT_COLUMNS['AMOUNT'], PAYMENT_COLUMNS['DESCRIPTION']]
         
-        # Step 2: Calculate allocations for each deal
-        self._calculate_allocations(verbose)
+        missing_deal_cols = [col for col in required_deal_cols if col not in deals_df.columns]
+        if missing_deal_cols:
+            raise ValueError(f"Missing required columns in deals_df: {missing_deal_cols}")
+            
+        missing_payment_cols = [col for col in required_payment_cols if col not in payments_df.columns]
+        if missing_payment_cols:
+            raise ValueError(f"Missing required columns in payments_df: {missing_payment_cols}")
         
-        # Step 3: Generate cashflows
-        self._generate_cashflows(payments_df, verbose)
-        
-        # Step 4: Calculate portfolio metrics
-        self._calculate_metrics(verbose)
-        
-        return self
+        try:
+            if verbose:
+                logger.info(f"Simulating portfolio: {self.name}")
+                logger.info(f"Selection criteria: {self.selection_criteria}")
+                logger.info(f"Allocation policy: {self.allocation_policy}")
+                logger.info(f"Fee schedule: {self.fee_schedule}")
+            
+            # Step 1: Select deals based on criteria
+            self.selected_deals = select_deals(deals_df, **self.selection_criteria, verbose=verbose)
+            
+            if self.selected_deals.empty:
+                logger.warning("No deals selected based on criteria.")
+                return self
+            
+            # Step 2: Calculate allocations for each deal
+            self._calculate_allocations(verbose)
+            
+            # Step 3: Generate cashflows
+            self._generate_cashflows(payments_df, verbose)
+            
+            return self
+            
+        except Exception as e:
+            # Wrap any unexpected exceptions
+            raise SimulationError(f"Portfolio simulation failed: {str(e)}") from e
     
     def _calculate_allocations(self, verbose=False):
-        """Calculate allocations for each selected deal."""
-        if self.selected_deals is None:
-            raise ValueError("No deals selected. Run simulate() first.")
+        """
+        Calculate allocations for each selected deal.
         
-        # Create a copy of selected deals
-        self.deal_allocations = self.selected_deals.copy()
-        
-        # Calculate allocation for each deal
-        self.deal_allocations['Allocation Amount'] = self.deal_allocations['Total Original Balance'].apply(
-            self.allocation_policy.calculate_allocation
-        )
-        
-        # Calculate allocation percentage
-        self.deal_allocations['Allocation Percentage'] = (
-            self.deal_allocations['Allocation Amount'] / self.deal_allocations['Total Original Balance']
-        )
-        
-        # Calculate allocated RTR
-        self.deal_allocations['Allocated RTR'] = (
-            self.deal_allocations['Total Original RTR'] * self.deal_allocations['Allocation Percentage']
-        )
-        
-        if verbose:
-            total_allocation = self.deal_allocations['Allocation Amount'].sum()
-            avg_percentage = self.deal_allocations['Allocation Percentage'].mean() * 100
+        Args:
+            verbose: Whether to print detailed information
             
-            print(f"\nAllocation summary:")
-            print(f"  Total deals: {len(self.deal_allocations)}")
-            print(f"  Total allocation: ${total_allocation:,.2f}")
-            print(f"  Average allocation: ${self.deal_allocations['Allocation Amount'].mean():,.2f}")
-            print(f"  Average allocation percentage: {avg_percentage:.2f}%")
+        Raises:
+            SimulationError: If allocation calculation fails
+        """
+        if self.selected_deals is None:
+            raise SimulationError("No deals selected. Run simulate() first.")
+        
+        try:
+            # Create a copy of selected deals
+            self.deal_allocations = self.selected_deals.copy()
+            
+            # Calculate allocation for each deal
+            self.deal_allocations['Allocation Amount'] = self.deal_allocations[DEAL_COLUMNS['BALANCE']].apply(
+                self.allocation_policy.calculate_allocation
+            )
+            
+            # Calculate allocation percentage
+            self.deal_allocations['Allocation Percentage'] = (
+                self.deal_allocations['Allocation Amount'] / self.deal_allocations[DEAL_COLUMNS['BALANCE']]
+            )
+            
+            # Calculate allocated RTR
+            self.deal_allocations['Allocated RTR'] = (
+                self.deal_allocations[DEAL_COLUMNS['RTR']] * self.deal_allocations['Allocation Percentage']
+            )
+            
+            if verbose:
+                total_allocation = self.deal_allocations['Allocation Amount'].sum()
+                avg_percentage = self.deal_allocations['Allocation Percentage'].mean() * 100
+                
+                logger.info(f"\nAllocation summary:")
+                logger.info(f"  Total deals: {len(self.deal_allocations)}")
+                logger.info(f"  Total allocation: ${total_allocation:,.2f}")
+                logger.info(f"  Average allocation: ${self.deal_allocations['Allocation Amount'].mean():,.2f}")
+                logger.info(f"  Average allocation percentage: {avg_percentage:.2f}%")
+                
+        except Exception as e:
+            raise SimulationError(f"Error calculating allocations: {str(e)}") from e
     
     def _generate_cashflows(self, payments_df, verbose=False):
-        """Generate cashflows for the portfolio based on allocations."""
+        """
+        Generate cashflows for the portfolio based on allocations.
+        
+        Args:
+            payments_df: DataFrame containing payment transactions
+            verbose: Whether to print detailed information
+            
+        Raises:
+            SimulationError: If cashflow generation fails
+        """
         if self.deal_allocations is None:
-            raise ValueError("No allocations calculated. Run simulate() first.")
+            raise SimulationError("No allocations calculated. Run simulate() first.")
         
-        # Get all payments for the selected deals
-        deal_ids = self.deal_allocations['Funded ID'].tolist()
-        deal_payments = payments_df[payments_df['Funded ID'].isin(deal_ids)].copy()
+        try:
+            # Step 1: Get payments for selected deals
+            deal_payments = self._get_deal_payments(payments_df, verbose)
+            
+            if deal_payments.empty:
+                logger.warning("No payment records found for selected deals.")
+                self.cashflows = pd.DataFrame(columns=[
+                    PAYMENT_COLUMNS['ID'], PAYMENT_COLUMNS['DATE'], PAYMENT_COLUMNS['DESCRIPTION'], 
+                    'Portfolio Amount', 'Fee Amount', 'Net Amount', 'Principal Repaid'
+                ])
+                return
+            
+            # Step 2: Apply allocation percentages
+            deal_payments = self._apply_allocation_percentages(deal_payments)
+            
+            # Step 3: Track principal repayment
+            deal_payments = self._track_principal_repayment(deal_payments)
+            
+            # Step 4: Calculate fees
+            deal_payments = self._calculate_fees(deal_payments)
+            
+            # Step 5: Finalize cashflows
+            self._finalize_cashflows(deal_payments, verbose)
+            
+        except Exception as e:
+            raise SimulationError(f"Error generating cashflows: {str(e)}") from e
+
+    def _get_deal_payments(self, payments_df, verbose=False):
+        """
+        Get payments for the selected deals.
         
+        Args:
+            payments_df: DataFrame containing payment transactions
+            verbose: Whether to print detailed information
+            
+        Returns:
+            DataFrame with payment data for selected deals
+        """
+        deal_ids = self.deal_allocations[DEAL_COLUMNS['ID']].tolist()
+        
+        # Add debug statements
         if verbose:
-            print(f"\nGenerating cashflows from {len(deal_payments)} payment records")
+            logger.info(f"Looking for payments for {len(deal_ids)} deals")
+            logger.info(f"Sample deal IDs: {deal_ids[:5] if len(deal_ids) >= 5 else deal_ids}")
+            logger.info(f"Total payment records: {len(payments_df)}")
+            
+            # Check for exact matches
+            matching_payments = payments_df[payments_df[PAYMENT_COLUMNS['ID']].isin(deal_ids)]
+            logger.info(f"Found {len(matching_payments)} payment records for the selected deals")
+            
+            # Show transaction types
+            if not matching_payments.empty:
+                logger.info(f"Transaction types: {matching_payments[PAYMENT_COLUMNS['DESCRIPTION']].value_counts().to_dict()}")
         
+        deal_payments = payments_df[payments_df[PAYMENT_COLUMNS['ID']].isin(deal_ids)].copy()
+        return deal_payments
+
+    def _apply_allocation_percentages(self, deal_payments):
+        """
+        Apply allocation percentages to deal payments.
+        
+        Args:
+            deal_payments: DataFrame with payment data
+            
+        Returns:
+            DataFrame with allocation percentages applied
+        """
         # Create a mapping of deal IDs to allocation percentages
-        allocation_map = self.deal_allocations[['Funded ID', 'Allocation Percentage']].set_index('Funded ID')['Allocation Percentage'].to_dict()
+        allocation_map = self.deal_allocations[[DEAL_COLUMNS['ID'], 'Allocation Percentage']].set_index(DEAL_COLUMNS['ID'])['Allocation Percentage'].to_dict()
         
         # Add allocation percentage column using vectorized mapping
-        deal_payments['Allocation Percentage'] = deal_payments['Funded ID'].map(allocation_map)
+        deal_payments['Allocation Percentage'] = deal_payments[PAYMENT_COLUMNS['ID']].map(allocation_map)
         
         # Apply the allocation percentage to each payment (vectorized)
-        deal_payments['Portfolio Amount'] = deal_payments['Transaction Amount'] * deal_payments['Allocation Percentage']
+        deal_payments['Portfolio Amount'] = deal_payments[PAYMENT_COLUMNS['AMOUNT']] * deal_payments['Allocation Percentage']
         
-        # Create a mapping of deal IDs to allocated amounts (for tracking principal repayment)
-        principal_map = self.deal_allocations[['Funded ID', 'Allocation Amount']].set_index('Funded ID')['Allocation Amount'].to_dict()
+        return deal_payments
+
+    def _track_principal_repayment(self, deal_payments):
+        """
+        Track principal repayment for each deal.
         
-        # Add running totals to track principal repayment - vectorized approach
-        deal_payments = deal_payments.sort_values(['Funded ID', 'Transaction Date'])
+        Args:
+            deal_payments: DataFrame with payment data
+            
+        Returns:
+            DataFrame with principal repayment tracking
+        """
+        # Create a mapping of deal IDs to allocated amounts
+        principal_map = self.deal_allocations[[DEAL_COLUMNS['ID'], 'Allocation Amount']].set_index(DEAL_COLUMNS['ID'])['Allocation Amount'].to_dict()
         
-        # Use transform to create cumulative sums within each deal group
-        # But we only want to count positive amounts (incoming cashflows)
+        # Sort by deal and date
+        deal_payments = deal_payments.sort_values([PAYMENT_COLUMNS['ID'], PAYMENT_COLUMNS['DATE']])
+        
+        # Track incoming cashflows
         incoming_mask = deal_payments['Portfolio Amount'] > 0
         deal_payments['Incoming Amount'] = deal_payments['Portfolio Amount'].where(incoming_mask, 0)
-        deal_payments['Cumulative Incoming'] = deal_payments.groupby('Funded ID')['Incoming Amount'].transform('cumsum')
+        deal_payments['Cumulative Incoming'] = deal_payments.groupby(PAYMENT_COLUMNS['ID'])['Incoming Amount'].transform('cumsum')
         
-        # Track which payments are after principal repayment (vectorized)
-        # Create a Series mapping each deal to its principal amount
-        deal_payments['Deal Principal'] = deal_payments['Funded ID'].map(
+        # Map each deal to its principal amount
+        deal_payments['Deal Principal'] = deal_payments[PAYMENT_COLUMNS['ID']].map(
             {k: abs(v) for k, v in principal_map.items()}
         )
         
         # Determine if principal has been repaid
         deal_payments['Principal Repaid'] = deal_payments['Cumulative Incoming'] >= deal_payments['Deal Principal']
         
-        # Calculate fees (vectorized)
+        return deal_payments
+
+    def _calculate_fees(self, deal_payments):
+        """
+        Calculate fees for each cashflow.
+        
+        Args:
+            deal_payments: DataFrame with payment data
+            
+        Returns:
+            DataFrame with fees calculated
+        """
+        # Initialize fee column
+        deal_payments['Fee Amount'] = 0.0
+        
+        # Determine which cashflows should have fees applied
         if self.fee_schedule.apply_after_principal:
             # Only apply fees to incoming cashflows after principal repayment
             fee_mask = (deal_payments['Portfolio Amount'] > 0) & deal_payments['Principal Repaid']
         else:
             # Apply fees to all incoming cashflows
             fee_mask = deal_payments['Portfolio Amount'] > 0
-            
-        deal_payments['Fee Amount'] = 0.0  # Initialize to zero
+        
+        # Calculate fees for applicable cashflows
         deal_payments.loc[fee_mask, 'Fee Amount'] = deal_payments.loc[fee_mask, 'Portfolio Amount'] * self.fee_schedule.percentage
         
         # Calculate net amount
         deal_payments['Net Amount'] = deal_payments['Portfolio Amount'] - deal_payments['Fee Amount']
         
-        # Store the cashflows
-        self.cashflows = deal_payments[['Funded ID', 'Transaction Date', 'Transaction Description', 
-                                        'Portfolio Amount', 'Fee Amount', 'Net Amount', 'Principal Repaid']]
+        return deal_payments
+
+    def _finalize_cashflows(self, deal_payments, verbose=False):
+        """
+        Store the final cashflows and display summary if verbose.
+        
+        Args:
+            deal_payments: DataFrame with payment data
+            verbose: Whether to print detailed information
+        """
+        # Select required columns for the cashflows dataframe
+        self.cashflows = deal_payments[[PAYMENT_COLUMNS['ID'], PAYMENT_COLUMNS['DATE'], PAYMENT_COLUMNS['DESCRIPTION'], 
+                                      'Portfolio Amount', 'Fee Amount', 'Net Amount', 'Principal Repaid']]
         
         if verbose:
             total_in = self.cashflows[self.cashflows['Portfolio Amount'] > 0]['Portfolio Amount'].sum()
             total_out = abs(self.cashflows[self.cashflows['Portfolio Amount'] < 0]['Portfolio Amount'].sum())
             total_fees = self.cashflows['Fee Amount'].sum()
             
-            print(f"Cashflow summary:")
-            print(f"  Total inflows: ${total_in:,.2f}")
-            print(f"  Total outflows: ${total_out:,.2f}")
-            print(f"  Total fees: ${total_fees:,.2f}")
-            print(f"  Net cashflow: ${total_in - total_out - total_fees:,.2f}")
-    
-    def _calculate_metrics(self, verbose=False):
-        """Calculate performance metrics for the portfolio."""
-        if self.cashflows is None:
-            raise ValueError("No cashflows generated. Run simulate() first.")
-        
-        # Prepare metrics dictionary
-        self.metrics = {
-            'all': {},
-            'seasoned': {}
-        }
-        
-        # Calculate metrics for all deals
-        self._calculate_metrics_for_subset(
-            'all', 
-            self.cashflows, 
-            verbose
-        )
-        
-        # Calculate metrics for seasoned deals only if we have funding date information
-        if self.deal_allocations is not None and 'Initial Funding Date' in self.deal_allocations.columns:
-            # Get seasoned deal IDs
-            seasoned_deals = self.deal_allocations[
-                self.deal_allocations['Initial Funding Date'] < self.seasoned_date
-            ]['Funded ID'].tolist()
-            
-            # Filter cashflows for seasoned deals
-            seasoned_cashflows = self.cashflows[self.cashflows['Funded ID'].isin(seasoned_deals)]
-            
-            if len(seasoned_cashflows) > 0:
-                self._calculate_metrics_for_subset(
-                    'seasoned', 
-                    seasoned_cashflows, 
-                    verbose
-                )
-            else:
-                if verbose:
-                    print("\nNo seasoned deals found based on date criteria.")
-                # Initialize empty metrics for seasoned deals
-                self.metrics['seasoned'] = {
-                    'total_invested': 0,
-                    'total_returned': 0,
-                    'net_cashflow': 0,
-                    'moic': float('nan'),
-                    'irr': float('nan'),
-                    'deal_count': 0
-                }
-        
-    def _calculate_metrics_for_subset(self, metrics_key, cashflows_subset, verbose=False):
-        """
-        Calculate metrics for a subset of cashflows.
-        
-        Args:
-            metrics_key: Key to store metrics under ('all' or 'seasoned')
-            cashflows_subset: DataFrame of cashflows to analyze
-            verbose: Whether to print detailed information
-        """
-        # Calculate by date for IRR calculation
-        cf_by_date = cashflows_subset.groupby('Transaction Date')['Net Amount'].sum().reset_index()
-        cf_by_date = cf_by_date.sort_values('Transaction Date')
-        
-        # Get unique deal count
-        deal_count = cashflows_subset['Funded ID'].nunique()
-        
-        # Basic metrics
-        total_in = cashflows_subset[cashflows_subset['Net Amount'] > 0]['Net Amount'].sum()
-        total_out = abs(cashflows_subset[cashflows_subset['Net Amount'] < 0]['Net Amount'].sum())
-        
-        if total_out > 0:
-            moic = total_in / total_out
-        else:
-            moic = float('nan')
-        
-        self.metrics[metrics_key] = {
-            'total_invested': total_out,
-            'total_returned': total_in,
-            'net_cashflow': total_in - total_out,
-            'moic': moic,
-            'deal_count': deal_count
-        }
-        
-        # Calculate IRR if possible
-        cf_amounts = cf_by_date['Net Amount'].tolist()
-        if len(cf_amounts) > 1 and not all(amt >= 0 for amt in cf_amounts):
-            try:
-                # Use numpy's IRR function
-                irr = np.irr(cf_amounts)
-                # Annualize the IRR
-                annual_irr = (1 + irr) ** 365 - 1
-                self.metrics[metrics_key]['irr'] = annual_irr
-            except:
-                self.metrics[metrics_key]['irr'] = float('nan')
-        else:
-            self.metrics[metrics_key]['irr'] = float('nan')
-        
-        if verbose:
-            category = "All deals" if metrics_key == 'all' else f"Seasoned deals (before {self.seasoned_date.strftime('%Y-%m-%d')})"
-            print(f"\n{category} performance metrics:")
-            print(f"  Deal count: {self.metrics[metrics_key]['deal_count']}")
-            print(f"  Total invested: ${self.metrics[metrics_key]['total_invested']:,.2f}")
-            print(f"  Total returned: ${self.metrics[metrics_key]['total_returned']:,.2f}")
-            print(f"  Net cashflow: ${self.metrics[metrics_key]['net_cashflow']:,.2f}")
-            print(f"  MOIC: {self.metrics[metrics_key]['moic']:.2f}x")
-            
-            if not np.isnan(self.metrics[metrics_key].get('irr', float('nan'))):
-                print(f"  IRR: {self.metrics[metrics_key]['irr']*100:.2f}%")
-            else:
-                print("  IRR: Unable to calculate")
+            logger.info(f"Cashflow summary:")
+            logger.info(f"  Total inflows: ${total_in:,.2f}")
+            logger.info(f"  Total outflows: ${total_out:,.2f}")
+            logger.info(f"  Total fees: ${total_fees:,.2f}")
+            logger.info(f"  Net cashflow: ${total_in - total_out - total_fees:,.2f}")
     
     def get_summary(self):
         """
-        Get a summary of the portfolio simulation.
+        Get a summary of the portfolio configuration.
         
         Returns:
-            Dict with portfolio summary information
+            Dict with portfolio configuration information
+            
+        Raises:
+            SimulationError: If portfolio has not been simulated
         """
-        if self.metrics is None:
-            raise ValueError("No metrics calculated. Run simulate() first.")
-        
+        if self.deal_allocations is None:
+            raise SimulationError("Portfolio has not been simulated. Run simulate() first.")
+            
         return {
             'name': self.name,
-            'all_deals': {
-                'deal_count': self.metrics['all'].get('deal_count', 0),
-                'total_invested': self.metrics['all']['total_invested'],
-                'total_returned': self.metrics['all']['total_returned'],
-                'net_cashflow': self.metrics['all']['net_cashflow'],
-                'moic': self.metrics['all']['moic'],
-                'irr': self.metrics['all'].get('irr', float('nan')),
-            },
-            'seasoned_deals': {
-                'deal_count': self.metrics['seasoned'].get('deal_count', 0),
-                'total_invested': self.metrics['seasoned'].get('total_invested', 0),
-                'total_returned': self.metrics['seasoned'].get('total_returned', 0),
-                'net_cashflow': self.metrics['seasoned'].get('net_cashflow', 0),
-                'moic': self.metrics['seasoned'].get('moic', float('nan')),
-                'irr': self.metrics['seasoned'].get('irr', float('nan')),
-                'seasoned_date': self.seasoned_date.strftime('%Y-%m-%d')
-            },
+            'selection_criteria': self.selection_criteria,
             'allocation_policy': str(self.allocation_policy),
-            'fee_schedule': str(self.fee_schedule)
+            'fee_schedule': str(self.fee_schedule),
+            'seasoned_date': self.seasoned_date.strftime('%Y-%m-%d'),
+            'deal_count': len(self.deal_allocations) if self.deal_allocations is not None else 0,
+            'total_allocation': self.deal_allocations['Allocation Amount'].sum() if self.deal_allocations is not None else 0
         }
     
     def __str__(self):
         """Return a string representation of the portfolio."""
-        if self.metrics is None:
+        if self.selected_deals is None:
             return f"Portfolio: {self.name} (not simulated)"
         
-        summary = self.get_summary()
+        if self.deal_allocations is None:
+            return f"Portfolio: {self.name} (no allocations calculated)"
         
-        # Format IRR for display
-        all_irr = f"{summary['all_deals']['irr']*100:.2f}%" if not np.isnan(summary['all_deals']['irr']) else "N/A"
-        seasoned_irr = f"{summary['seasoned_deals']['irr']*100:.2f}%" if not np.isnan(summary['seasoned_deals']['irr']) else "N/A"
+        total_allocation = self.deal_allocations['Allocation Amount'].sum()
+        deal_count = len(self.deal_allocations)
         
         return (
-            f"Portfolio: {summary['name']}\n\n"
-            f"ALL DEALS:\n"
-            f"  Deals: {summary['all_deals']['deal_count']}\n"
-            f"  Investment: ${summary['all_deals']['total_invested']:,.2f}\n"
-            f"  Returned: ${summary['all_deals']['total_returned']:,.2f}\n"
-            f"  Net: ${summary['all_deals']['net_cashflow']:,.2f}\n"
-            f"  MOIC: {summary['all_deals']['moic']:.2f}x\n"
-            f"  IRR: {all_irr}\n\n"
-            f"SEASONED DEALS (before {summary['seasoned_deals']['seasoned_date']}):\n"
-            f"  Deals: {summary['seasoned_deals']['deal_count']}\n"
-            f"  Investment: ${summary['seasoned_deals']['total_invested']:,.2f}\n"
-            f"  Returned: ${summary['seasoned_deals']['total_returned']:,.2f}\n"
-            f"  Net: ${summary['seasoned_deals']['net_cashflow']:,.2f}\n"
-            f"  MOIC: {summary['seasoned_deals']['moic']:.2f}x\n"
-            f"  IRR: {seasoned_irr}\n"
+            f"Portfolio: {self.name}\n\n"
+            f"Selection Criteria: {self.selection_criteria}\n"
+            f"Allocation Policy: {self.allocation_policy}\n"
+            f"Fee Schedule: {self.fee_schedule}\n\n"
+            f"PORTFOLIO SUMMARY:\n"
+            f"  Deals: {deal_count}\n"
+            f"  Total Allocation: ${total_allocation:,.2f}\n"
         )
-
-
-def compare_portfolios(portfolios, metrics_type='all'):
-    """
-    Compare multiple portfolio simulations.
-    
-    Args:
-        portfolios: List of Portfolio instances
-        metrics_type: Type of metrics to compare ('all' or 'seasoned')
-        
-    Returns:
-        DataFrame with comparison of portfolios
-    """
-    if not portfolios:
-        raise ValueError("No portfolios provided")
-    
-    if metrics_type not in ['all', 'seasoned']:
-        raise ValueError("metrics_type must be 'all' or 'seasoned'")
-    
-    # Get summary for each portfolio
-    summaries = []
-    for portfolio in portfolios:
-        try:
-            summary = portfolio.get_summary()
-            
-            # Add portfolio name
-            metrics_data = summary[f'{metrics_type}_deals'].copy()
-            metrics_data['name'] = summary['name']
-            metrics_data['allocation_policy'] = summary['allocation_policy']
-            metrics_data['fee_schedule'] = summary['fee_schedule']
-            
-            summaries.append(metrics_data)
-        except ValueError:
-            # Skip portfolios that haven't been simulated
-            continue
-    
-    if not summaries:
-        raise ValueError("None of the provided portfolios have been simulated")
-    
-    # Create a DataFrame for comparison
-    df = pd.DataFrame(summaries)
-    
-    # Reorder and format columns
-    columns = ['name', 'deal_count', 'total_invested', 'total_returned', 
-               'net_cashflow', 'moic', 'irr', 'allocation_policy', 'fee_schedule']
-    
-    if metrics_type == 'seasoned':
-        columns.append('seasoned_date')
-    
-    # Ensure all columns exist
-    available_columns = [col for col in columns if col in df.columns]
-    
-    df = df[available_columns]
-    
-    # Rename columns for display
-    column_mapping = {
-        'name': 'Name', 
-        'deal_count': 'Deals', 
-        'total_invested': 'Invested', 
-        'total_returned': 'Returned', 
-        'net_cashflow': 'Net Cashflow', 
-        'moic': 'MOIC', 
-        'irr': 'IRR', 
-        'allocation_policy': 'Allocation Policy', 
-        'fee_schedule': 'Fee Schedule',
-        'seasoned_date': 'Seasoned Date'
-    }
-    
-    df.columns = [column_mapping.get(col, col) for col in df.columns]
-    
-    # Format numeric columns
-    if 'IRR' in df.columns:
-        df['IRR'] = df['IRR'] * 100  # Convert to percentage
-    
-    return df
-
-
-if __name__ == "__main__":
-    # Example usage
-    from data_loader import load_data
-    
-    # Load data
-    deals_df, payments_df = load_data()
-    
-    # Create a portfolio
-    portfolio = Portfolio(
-        name="Sample Portfolio",
-        selection_criteria={
-            'product_types': ['RBF'],
-            'deal_size_range': (100000, 500000),
-            'vintage_range': ('2023-01-01', '2023-12-31')
-        },
-        allocation_policy=AllocationPolicy(
-            percentage=0.1, 
-            min_amount=50000, 
-            max_amount=200000
-        ),
-        fee_schedule=FeeSchedule(
-            percentage=0.02,
-            apply_after_principal=True
-        )
-    )
-    
-    # Simulate the portfolio
-    portfolio.simulate(deals_df, payments_df, verbose=True)
-    
-    # Print portfolio summary
-    print("\nPortfolio Summary:")
-    print(portfolio)

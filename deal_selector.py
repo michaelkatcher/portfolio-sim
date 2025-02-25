@@ -8,6 +8,13 @@ This module handles the selection of deals based on various criteria.
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import logging
+
+from common_utils import setup_logging
+from constants import DEAL_COLUMNS
+
+# Set up logger
+logger = setup_logging(__name__)
 
 
 def select_deals(deals_df, 
@@ -33,13 +40,13 @@ def select_deals(deals_df,
         DataFrame containing the selected deals
     """
     if verbose:
-        print(f"Selecting deals from {len(deals_df)} total deals")
-        print(f"Selection criteria:")
-        print(f"  Product Types: {product_types}")
-        print(f"  Credit Tiers: {credit_tiers}")
-        print(f"  FICO Range: {fico_range}")
-        print(f"  Deal Size Range: {deal_size_range}")
-        print(f"  Vintage Range: {vintage_range}")
+        logger.info(f"Selecting deals from {len(deals_df)} total deals")
+        logger.info(f"Selection criteria:")
+        logger.info(f"  Product Types: {product_types}")
+        logger.info(f"  Credit Tiers: {credit_tiers}")
+        logger.info(f"  FICO Range: {fico_range}")
+        logger.info(f"  Deal Size Range: {deal_size_range}")
+        logger.info(f"  Vintage Range: {vintage_range}")
     
     # Start with a copy of all deals
     selected_deals = deals_df.copy()
@@ -50,51 +57,51 @@ def select_deals(deals_df,
     
     # Filter by product type
     if product_types is not None and len(product_types) > 0:
-        if 'Product' in selected_deals.columns:
+        if DEAL_COLUMNS['PRODUCT'] in selected_deals.columns:
             before_count = len(selected_deals)
-            selected_deals = selected_deals[selected_deals['Product'].isin(product_types)]
+            selected_deals = selected_deals[selected_deals[DEAL_COLUMNS['PRODUCT']].isin(product_types)]
             filter_impacts['Product Type'] = before_count - len(selected_deals)
         else:
-            print("WARNING: 'Product' column not found, skipping product type filter")
+            logger.warning(f"WARNING: '{DEAL_COLUMNS['PRODUCT']}' column not found, skipping product type filter")
     
     # Filter by credit tier
     if credit_tiers is not None and len(credit_tiers) > 0:
-        if 'Credit_Tier' in selected_deals.columns:
+        if DEAL_COLUMNS['CREDIT_TIER'] in selected_deals.columns:
             before_count = len(selected_deals)
-            selected_deals = selected_deals[selected_deals['Credit_Tier'].isin(credit_tiers)]
+            selected_deals = selected_deals[selected_deals[DEAL_COLUMNS['CREDIT_TIER']].isin(credit_tiers)]
             filter_impacts['Credit Tier'] = before_count - len(selected_deals)
         else:
-            print("WARNING: 'Credit_Tier' column not found, skipping credit tier filter")
+            logger.warning(f"WARNING: '{DEAL_COLUMNS['CREDIT_TIER']}' column not found, skipping credit tier filter")
     
     # Filter by FICO score
     if fico_range is not None and len(fico_range) == 2:
-        if 'Owner FICO' in selected_deals.columns:
+        if DEAL_COLUMNS['FICO'] in selected_deals.columns:
             min_fico, max_fico = fico_range
             before_count = len(selected_deals)
             selected_deals = selected_deals[
-                (selected_deals['Owner FICO'] >= min_fico) & 
-                (selected_deals['Owner FICO'] <= max_fico)
+                (selected_deals[DEAL_COLUMNS['FICO']] >= min_fico) & 
+                (selected_deals[DEAL_COLUMNS['FICO']] <= max_fico)
             ]
             filter_impacts['FICO Range'] = before_count - len(selected_deals)
         else:
-            print("WARNING: 'Owner FICO' column not found, skipping FICO filter")
+            logger.warning(f"WARNING: '{DEAL_COLUMNS['FICO']}' column not found, skipping FICO filter")
     
     # Filter by deal size
     if deal_size_range is not None and len(deal_size_range) == 2:
-        if 'Total Original Balance' in selected_deals.columns:
+        if DEAL_COLUMNS['BALANCE'] in selected_deals.columns:
             min_size, max_size = deal_size_range
             before_count = len(selected_deals)
             selected_deals = selected_deals[
-                (selected_deals['Total Original Balance'] >= min_size) & 
-                (selected_deals['Total Original Balance'] <= max_size)
+                (selected_deals[DEAL_COLUMNS['BALANCE']] >= min_size) & 
+                (selected_deals[DEAL_COLUMNS['BALANCE']] <= max_size)
             ]
             filter_impacts['Deal Size'] = before_count - len(selected_deals)
         else:
-            print("WARNING: 'Total Original Balance' column not found, skipping deal size filter")
+            logger.warning(f"WARNING: '{DEAL_COLUMNS['BALANCE']}' column not found, skipping deal size filter")
     
     # Filter by vintage (funding date)
     if vintage_range is not None and len(vintage_range) == 2:
-        if 'Initial Funding Date' in selected_deals.columns:
+        if DEAL_COLUMNS['FUNDING_DATE'] in selected_deals.columns:
             start_date, end_date = vintage_range
             
             # Convert string dates to datetime if needed
@@ -105,38 +112,38 @@ def select_deals(deals_df,
             
             before_count = len(selected_deals)
             selected_deals = selected_deals[
-                (selected_deals['Initial Funding Date'] >= start_date) & 
-                (selected_deals['Initial Funding Date'] <= end_date)
+                (selected_deals[DEAL_COLUMNS['FUNDING_DATE']] >= start_date) & 
+                (selected_deals[DEAL_COLUMNS['FUNDING_DATE']] <= end_date)
             ]
             filter_impacts['Vintage'] = before_count - len(selected_deals)
         else:
-            print("WARNING: 'Initial Funding Date' column not found, skipping vintage filter")
+            logger.warning(f"WARNING: '{DEAL_COLUMNS['FUNDING_DATE']}' column not found, skipping vintage filter")
     
     # Print summary if verbose
     if verbose:
-        print(f"\nSelection results:")
-        print(f"  Original deals: {original_count}")
-        print(f"  Selected deals: {len(selected_deals)} ({len(selected_deals)/original_count*100:.2f}%)")
-        print(f"  Excluded deals: {original_count - len(selected_deals)}")
+        logger.info(f"\nSelection results:")
+        logger.info(f"  Original deals: {original_count}")
+        logger.info(f"  Selected deals: {len(selected_deals)} ({len(selected_deals)/original_count*100:.2f}%)")
+        logger.info(f"  Excluded deals: {original_count - len(selected_deals)}")
         
-        print("\nImpact of each filter:")
+        logger.info("\nImpact of each filter:")
         for filter_name, impact in filter_impacts.items():
-            print(f"  {filter_name}: -{impact} deals")
+            logger.info(f"  {filter_name}: -{impact} deals")
         
         if len(selected_deals) > 0:
-            print("\nSelected deal statistics:")
-            if 'Total Original Balance' in selected_deals.columns:
-                bal = selected_deals['Total Original Balance']
-                print(f"  Total balance: ${bal.sum():,.2f}")
-                print(f"  Average deal size: ${bal.mean():,.2f}")
-                print(f"  Min deal size: ${bal.min():,.2f}")
-                print(f"  Max deal size: ${bal.max():,.2f}")
+            logger.info("\nSelected deal statistics:")
+            if DEAL_COLUMNS['BALANCE'] in selected_deals.columns:
+                bal = selected_deals[DEAL_COLUMNS['BALANCE']]
+                logger.info(f"  Total balance: ${bal.sum():,.2f}")
+                logger.info(f"  Average deal size: ${bal.mean():,.2f}")
+                logger.info(f"  Min deal size: ${bal.min():,.2f}")
+                logger.info(f"  Max deal size: ${bal.max():,.2f}")
             
-            if 'Product' in selected_deals.columns:
-                print("\nProduct distribution in selected deals:")
-                product_counts = selected_deals['Product'].value_counts()
+            if DEAL_COLUMNS['PRODUCT'] in selected_deals.columns:
+                logger.info("\nProduct distribution in selected deals:")
+                product_counts = selected_deals[DEAL_COLUMNS['PRODUCT']].value_counts()
                 for product, count in product_counts.items():
-                    print(f"  {product}: {count} deals ({count/len(selected_deals)*100:.2f}%)")
+                    logger.info(f"  {product}: {count} deals ({count/len(selected_deals)*100:.2f}%)")
     
     return selected_deals
 
@@ -161,30 +168,30 @@ def validate_selection_criteria(deals_df, product_types=None, credit_tiers=None,
     
     # Check product types
     if product_types is not None:
-        if 'Product' not in deals_df.columns:
-            results['errors'].append("'Product' column not found in data")
+        if DEAL_COLUMNS['PRODUCT'] not in deals_df.columns:
+            results['errors'].append(f"'{DEAL_COLUMNS['PRODUCT']}' column not found in data")
             results['valid'] = False
         else:
-            available_products = deals_df['Product'].unique()
+            available_products = deals_df[DEAL_COLUMNS['PRODUCT']].unique()
             invalid_products = [p for p in product_types if p not in available_products]
             if invalid_products:
                 results['warnings'].append(f"Products not found in data: {invalid_products}")
     
     # Check credit tiers
     if credit_tiers is not None:
-        if 'Credit_Tier' not in deals_df.columns:
-            results['errors'].append("'Credit_Tier' column not found in data")
+        if DEAL_COLUMNS['CREDIT_TIER'] not in deals_df.columns:
+            results['errors'].append(f"'{DEAL_COLUMNS['CREDIT_TIER']}' column not found in data")
             results['valid'] = False
         else:
-            available_tiers = deals_df['Credit_Tier'].unique()
+            available_tiers = deals_df[DEAL_COLUMNS['CREDIT_TIER']].unique()
             invalid_tiers = [t for t in credit_tiers if t not in available_tiers]
             if invalid_tiers:
                 results['warnings'].append(f"Credit tiers not found in data: {invalid_tiers}")
     
     # Check FICO range
     if fico_range is not None:
-        if 'Owner FICO' not in deals_df.columns:
-            results['errors'].append("'Owner FICO' column not found in data")
+        if DEAL_COLUMNS['FICO'] not in deals_df.columns:
+            results['errors'].append(f"'{DEAL_COLUMNS['FICO']}' column not found in data")
             results['valid'] = False
         else:
             if not isinstance(fico_range, tuple) or len(fico_range) != 2:
@@ -192,8 +199,8 @@ def validate_selection_criteria(deals_df, product_types=None, credit_tiers=None,
                 results['valid'] = False
             else:
                 min_fico, max_fico = fico_range
-                data_min = deals_df['Owner FICO'].min()
-                data_max = deals_df['Owner FICO'].max()
+                data_min = deals_df[DEAL_COLUMNS['FICO']].min()
+                data_max = deals_df[DEAL_COLUMNS['FICO']].max()
                 
                 if min_fico > max_fico:
                     results['errors'].append(f"Invalid FICO range: min ({min_fico}) > max ({max_fico})")
@@ -207,8 +214,8 @@ def validate_selection_criteria(deals_df, product_types=None, credit_tiers=None,
     
     # Check deal size range
     if deal_size_range is not None:
-        if 'Total Original Balance' not in deals_df.columns:
-            results['errors'].append("'Total Original Balance' column not found in data")
+        if DEAL_COLUMNS['BALANCE'] not in deals_df.columns:
+            results['errors'].append(f"'{DEAL_COLUMNS['BALANCE']}' column not found in data")
             results['valid'] = False
         else:
             if not isinstance(deal_size_range, tuple) or len(deal_size_range) != 2:
@@ -223,8 +230,8 @@ def validate_selection_criteria(deals_df, product_types=None, credit_tiers=None,
     
     # Check vintage range
     if vintage_range is not None:
-        if 'Initial Funding Date' not in deals_df.columns:
-            results['errors'].append("'Initial Funding Date' column not found in data")
+        if DEAL_COLUMNS['FUNDING_DATE'] not in deals_df.columns:
+            results['errors'].append(f"'{DEAL_COLUMNS['FUNDING_DATE']}' column not found in data")
             results['valid'] = False
         else:
             if not isinstance(vintage_range, tuple) or len(vintage_range) != 2:
@@ -253,23 +260,3 @@ def validate_selection_criteria(deals_df, product_types=None, credit_tiers=None,
                     results['valid'] = False
     
     return results
-
-
-if __name__ == "__main__":
-    # Example usage
-    from data_loader import load_data
-    
-    deals_df, _ = load_data()
-    
-    # Run tests
-    test_deal_selection(deals_df)
-    
-    # Example selection
-    print("\nExample selection:")
-    selected_deals = select_deals(
-        deals_df,
-        product_types=['RBF'],
-        deal_size_range=(100000, 500000),
-        vintage_range=('2023-01-01', '2023-12-31'),
-        verbose=True
-    )

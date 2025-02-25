@@ -10,11 +10,15 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import os
+import logging
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment, numbers
 from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.chart import LineChart, Reference
-from openpyxl.chart.marker import Marker
+
+from common_utils import setup_logging, ExportError
+
+# Set up logger
+logger = setup_logging(__name__)
 
 
 def export_portfolio_to_excel(portfolio, filename, verbose=False):
@@ -28,33 +32,317 @@ def export_portfolio_to_excel(portfolio, filename, verbose=False):
         
     Returns:
         Path to the created Excel file
+        
+    Raises:
+        ExportError: If export fails
+        ValueError: If inputs are invalid
     """
-    if verbose:
-        print(f"Exporting portfolio '{portfolio.name}' to Excel: {filename}")
+    # Validate inputs
+    if portfolio is None:
+        raise ValueError("Portfolio cannot be None")
+        
+    if not filename:
+        raise ValueError("Filename cannot be empty")
     
-    # Create a workbook
-    wb = Workbook()
-    
-    # Remove the default sheet
-    default_sheet = wb.active
-    wb.remove(default_sheet)
-    
-    # Create each sheet
-    _create_portfolio_scenario_sheet(wb, portfolio)
-    _create_cashflows_sheet(wb, portfolio)
-    _create_deals_sheet(wb, portfolio)
-    _create_analysis_sheet(wb, portfolio)
-    
-    # Save the workbook
-    wb.save(filename)
+    # Make sure output directory exists
+    try:
+        output_dir = os.path.dirname(filename)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            if verbose:
+                logger.info(f"Created output directory: {output_dir}")
+    except Exception as e:
+        raise ExportError(f"Failed to create output directory: {str(e)}") from e
     
     if verbose:
-        print(f"Export completed: {filename}")
+        logger.info(f"Exporting portfolio '{portfolio.name}' to Excel: {filename}")
     
-    return filename
+    try:
+        # Create a workbook
+        wb = Workbook()
+        
+        # Remove the default sheet
+        default_sheet = wb.active
+        wb.remove(default_sheet)
+        
+        # Create each sheet
+        _create_portfolio_scenario_sheet(wb, portfolio)
+        _create_cashflows_sheet(wb, portfolio)
+        _create_deals_sheet(wb, portfolio)
+        
+        # Save the workbook
+        wb.save(filename)
+        
+        if verbose:
+            logger.info(f"Export completed: {filename}")
+        
+        return filename
+        
+    except Exception as e:
+        raise ExportError(f"Failed to export portfolio to Excel: {str(e)}") from e
 
 
-# Update to the _create_portfolio_scenario_sheet function to include commission statistics
+# =================== Helper Functions ===================
+
+def _set_column_widths(ws, width_map):
+    """
+    Set column widths from a map of column letters to widths.
+    
+    Args:
+        ws: Worksheet object
+        width_map: Dict mapping column letters to widths
+    """
+    try:
+        for col, width in width_map.items():
+            ws.column_dimensions[col].width = width
+    except Exception as e:
+        logger.warning(f"Error setting column widths: {str(e)}")
+
+
+def _apply_header_style(cell, is_section_header=False):
+    """
+    Apply standard header styling to a cell.
+    
+    Args:
+        cell: Cell object to style
+        is_section_header: Whether this is a section header (different style)
+    
+    Returns:
+        The styled cell
+    """
+    try:
+        if is_section_header:
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill("solid", fgColor="D9D9D9")
+        else:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="4472C4")
+        
+        cell.alignment = Alignment(horizontal='center')
+        return cell
+    except Exception as e:
+        logger.warning(f"Error applying header style: {str(e)}")
+        return cell
+
+
+def _format_money_cell(cell, value):
+    """
+    Format a cell as currency.
+    
+    Args:
+        cell: Cell object to format
+        value: Value to set
+    
+    Returns:
+        The formatted cell
+    """
+    try:
+        cell.value = value
+        cell.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
+        return cell
+    except Exception as e:
+        logger.warning(f"Error formatting money cell: {str(e)}")
+        cell.value = value  # At least set the value even if formatting fails
+        return cell
+
+
+def _format_percent_cell(cell, value):
+    """
+    Format a cell as percentage.
+    
+    Args:
+        cell: Cell object to format
+        value: Value to set (0-1 range)
+    
+    Returns:
+        The formatted cell
+    """
+    try:
+        cell.value = value
+        cell.number_format = '0.00%'
+        return cell
+    except Exception as e:
+        logger.warning(f"Error formatting percent cell: {str(e)}")
+        cell.value = value  # At least set the value even if formatting fails
+        return cell
+
+
+def _format_date_cell(cell, value, date_format='yyyy-mm-dd'):
+    """
+    Format a cell as date.
+    
+    Args:
+        cell: Cell object to format
+        value: Value to set (datetime or string)
+        date_format: Excel date format
+    
+    Returns:
+        The formatted cell
+    """
+    try:
+        # Convert datetime to string if needed
+        if isinstance(value, datetime):
+            value = value.strftime('%Y-%m-%d')
+        
+        cell.value = value
+        cell.number_format = date_format
+        return cell
+    except Exception as e:
+        logger.warning(f"Error formatting date cell: {str(e)}")
+        cell.value = value  # At least set the value even if formatting fails
+        return cell
+
+def _format_boolean_cell(cell, value):
+    """Format a cell as a Yes/No boolean value."""
+    cell.value = "Yes" if value else "No"
+    cell.alignment = Alignment(horizontal='center')
+    return cell
+
+def _add_section_header(ws, row, text, span=2):
+    """
+    Add a section header to a worksheet.
+    
+    Args:
+        ws: Worksheet object
+        row: Row number
+        text: Header text
+        span: Number of columns to span
+    
+    Returns:
+        Next available row number
+    """
+    try:
+        ws.cell(row=row, column=1, value=text)
+        _apply_header_style(ws.cell(row=row, column=1), True)
+        
+        # Apply styling to additional columns if span > 1
+        for col in range(2, span + 1):
+            _apply_header_style(ws.cell(row=row, column=col), True)
+        
+        # Merge cells if span > 1
+        if span > 1:
+            ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=span)
+        
+        return row + 1
+    except Exception as e:
+        logger.warning(f"Error adding section header: {str(e)}")
+        return row + 1  # Return next row anyway to continue
+
+
+def _add_label_value_row(ws, row, label, value, value_format=None):
+    """
+    Add a label-value pair row to a worksheet.
+    
+    Args:
+        ws: Worksheet object
+        row: Row number
+        label: Label for column A
+        value: Value for column B
+        value_format: Optional function to format the value cell
+    
+    Returns:
+        Next available row number
+    """
+    try:
+        ws.cell(row=row, column=1, value=label)
+        
+        value_cell = ws.cell(row=row, column=2)
+        
+        if value_format:
+            value_format(value_cell, value)
+        else:
+            value_cell.value = value
+        
+        return row + 1
+    except Exception as e:
+        logger.warning(f"Error adding label-value row: {str(e)}")
+        return row + 1  # Return next row anyway to continue
+
+
+def _create_table_from_df(ws, df, start_row, columns=None, formats=None, include_totals=False):
+    """
+    Create a table from a DataFrame.
+    
+    Args:
+        ws: Worksheet object
+        df: DataFrame to display
+        start_row: Starting row
+        columns: List of columns to include (defaults to all)
+        formats: Dict mapping column names to formatting functions
+        include_totals: Whether to include totals row
+    
+    Returns:
+        Next available row number
+    """
+    try:
+        # Select columns if specified
+        if columns:
+            # Only include columns that exist in the DataFrame
+            available_columns = [col for col in columns if col in df.columns]
+            df = df[available_columns]
+        else:
+            available_columns = df.columns.tolist()
+        
+        # Set up column formats
+        formats = formats or {}
+        
+        # Add headers
+        current_row = start_row
+        for col_idx, col_name in enumerate(available_columns, 1):
+            # Use more readable header names
+            display_name = col_name.replace('_', ' ')
+            cell = ws.cell(row=current_row, column=col_idx, value=display_name)
+            _apply_header_style(cell)
+        
+        current_row += 1
+        
+        # Add data rows
+        for _, row_data in df.iterrows():
+            for col_idx, col_name in enumerate(available_columns, 1):
+                value = row_data[col_name]
+                cell = ws.cell(row=current_row, column=col_idx)
+                
+                # Apply format if specified
+                if col_name in formats:
+                    formats[col_name](cell, value)
+                else:
+                    cell.value = value
+            
+            current_row += 1
+        
+        # Add totals row if requested
+        if include_totals and not df.empty:
+            ws.cell(row=current_row, column=1, value="TOTAL").font = Font(bold=True)
+            
+            for col_idx, col_name in enumerate(available_columns, 1):
+                # Only sum numeric columns
+                if col_name in formats and (formats[col_name] == _format_money_cell or 
+                                           pd.api.types.is_numeric_dtype(df[col_name])):
+                    total = df[col_name].sum()
+                    cell = ws.cell(row=current_row, column=col_idx, value=total)
+                    cell.font = Font(bold=True)
+                    
+                    # Use the same format as the column
+                    if col_name in formats:
+                        formats[col_name](cell, total)
+                
+                # Calculate weighted average for percentage columns
+                elif col_name == 'Commission Cost %' and 'Total Original Balance' in df.columns:
+                    weighted_avg = (df['Commission Cost %'] * df['Total Original Balance']).sum() / df['Total Original Balance'].sum()
+                    cell = ws.cell(row=current_row, column=col_idx)
+                    _format_percent_cell(cell, weighted_avg)
+                    cell.font = Font(bold=True)
+            
+            current_row += 1
+        
+        return current_row
+    
+    except Exception as e:
+        logger.error(f"Error creating table from DataFrame: {str(e)}")
+        return start_row + 1  # Return a row number to continue
+
+
+# =================== Sheet Creation Functions ===================
 
 def _create_portfolio_scenario_sheet(wb, portfolio):
     """
@@ -63,175 +351,109 @@ def _create_portfolio_scenario_sheet(wb, portfolio):
     Args:
         wb: Workbook object
         portfolio: Portfolio instance
+        
+    Returns:
+        Worksheet object
     """
-    ws = wb.create_sheet("Portfolio Scenario", 0)
-    
-    # Define styles
-    header_font = Font(bold=True)
-    header_fill = PatternFill("solid", fgColor="D9D9D9")
-    
-    # Set column widths
-    ws.column_dimensions['A'].width = 30
-    ws.column_dimensions['B'].width = 50
-    
-    # Add title
-    ws['A1'] = "Portfolio Scenario"
-    ws['A1'].font = Font(bold=True, size=14)
-    
-    # Add selection criteria section
-    row = 3
-    ws['A' + str(row)] = "Selection Criteria"
-    ws['A' + str(row)].font = header_font
-    ws.cell(row=row, column=1).fill = header_fill
-    ws.cell(row=row, column=2).fill = header_fill
-    
-    row += 1
-    ws['A' + str(row)] = "Product Types"
-    if 'product_types' in portfolio.selection_criteria and portfolio.selection_criteria['product_types']:
-        ws['B' + str(row)] = ", ".join(portfolio.selection_criteria['product_types'])
-    else:
-        ws['B' + str(row)] = "All"
+    try:
+        ws = wb.create_sheet("Portfolio Scenario", 0)
         
-    row += 1
-    ws['A' + str(row)] = "Credit Grades"
-    if 'credit_tiers' in portfolio.selection_criteria and portfolio.selection_criteria['credit_tiers']:
-        ws['B' + str(row)] = ", ".join(portfolio.selection_criteria['credit_tiers'])
-    else:
-        ws['B' + str(row)] = "All"
+        # Set column widths
+        _set_column_widths(ws, {'A': 30, 'B': 50})
         
-    row += 1
-    ws['A' + str(row)] = "Deal Size Range"
-    if 'deal_size_range' in portfolio.selection_criteria and portfolio.selection_criteria['deal_size_range']:
-        min_size, max_size = portfolio.selection_criteria['deal_size_range']
-        ws['B' + str(row)] = f"${min_size:,.2f} to ${max_size:,.2f}"
-    else:
-        ws['B' + str(row)] = "All"
+        # Add title
+        ws.cell(row=1, column=1, value="Portfolio Scenario")
+        ws.cell(row=1, column=1).font = Font(bold=True, size=14)
         
-    row += 1
-    ws['A' + str(row)] = "Vintages"
-    if 'vintage_range' in portfolio.selection_criteria and portfolio.selection_criteria['vintage_range']:
-        start_date, end_date = portfolio.selection_criteria['vintage_range']
-        if isinstance(start_date, datetime):
-            start_date = start_date.strftime('%Y-%m-%d')
-        if isinstance(end_date, datetime):
-            end_date = end_date.strftime('%Y-%m-%d')
-        ws['B' + str(row)] = f"{start_date} to {end_date}"
-    else:
-        ws['B' + str(row)] = "All"
+        # Current row tracker
+        row = 3
         
-    # Add allocation policy section
-    row += 2
-    ws['A' + str(row)] = "Allocation Policy"
-    ws['A' + str(row)].font = header_font
-    ws.cell(row=row, column=1).fill = header_fill
-    ws.cell(row=row, column=2).fill = header_fill
-    
-    row += 1
-    ws['A' + str(row)] = "Allocation Formula"
-    # Format for the MAX(min, MIN(max, pct*DealSize)) formula
-    min_amt = portfolio.allocation_policy.min_amount or 0
-    max_amt = portfolio.allocation_policy.max_amount or "∞"
-    pct = portfolio.allocation_policy.percentage * 100
-    
-    if min_amt > 0 and max_amt != "∞":
-        formula_str = f"MAX({min_amt:,.0f}, MIN({max_amt:,.0f}, {pct:.1f}%*DealSize))"
-    elif min_amt > 0:
-        formula_str = f"MAX({min_amt:,.0f}, {pct:.1f}%*DealSize)"
-    elif max_amt != "∞":
-        formula_str = f"MIN({max_amt:,.0f}, {pct:.1f}%*DealSize)"
-    else:
-        formula_str = f"{pct:.1f}%*DealSize"
+        # Add selection criteria section
+        row = _add_section_header(ws, row, "Selection Criteria")
         
-    ws['B' + str(row)] = formula_str
-    
-    # Add fee structure section
-    row += 2
-    ws['A' + str(row)] = "Fee Structure"
-    ws['A' + str(row)].font = header_font
-    ws.cell(row=row, column=1).fill = header_fill
-    ws.cell(row=row, column=2).fill = header_fill
-    
-    row += 1
-    ws['A' + str(row)] = "Management Fee"
-    fee_pct = portfolio.fee_schedule.percentage * 100
-    if portfolio.fee_schedule.apply_after_principal:
-        ws['B' + str(row)] = f"{fee_pct:.1f}% of incoming cashflows after principal repayment"
-    else:
-        ws['B' + str(row)] = f"{fee_pct:.1f}% of all incoming cashflows"
-    
-    # Add commission section if data is available
-    if portfolio.deal_allocations is not None and 'Commission Cost %' in portfolio.deal_allocations.columns:
-        row += 2
-        ws['A' + str(row)] = "Commission Information"
-        ws['A' + str(row)].font = header_font
-        ws.cell(row=row, column=1).fill = header_fill
-        ws.cell(row=row, column=2).fill = header_fill
+        # Product Types
+        product_types = ", ".join(portfolio.selection_criteria.get('product_types', [])) if portfolio.selection_criteria.get('product_types') else "All"
+        row = _add_label_value_row(ws, row, "Product Types", product_types)
         
-        row += 1
-        ws['A' + str(row)] = "Average Commission Rate"
-        avg_commission = portfolio.deal_allocations['Commission Cost %'].mean() * 100
-        ws['B' + str(row)] = f"{avg_commission:.2f}%"
+        # Credit Grades
+        credit_tiers = ", ".join(portfolio.selection_criteria.get('credit_tiers', [])) if portfolio.selection_criteria.get('credit_tiers') else "All"
+        row = _add_label_value_row(ws, row, "Credit Grades", credit_tiers)
         
-        row += 1
-        ws['A' + str(row)] = "Weighted Avg Commission Rate"
-        # Calculate weighted average by deal size
-        weighted_avg = (portfolio.deal_allocations['Commission Cost %'] * 
-                         portfolio.deal_allocations['Total Original Balance']).sum() / portfolio.deal_allocations['Total Original Balance'].sum() * 100
-        ws['B' + str(row)] = f"{weighted_avg:.2f}%"
-        
-        row += 1
-        ws['A' + str(row)] = "Min Commission Rate"
-        min_commission = portfolio.deal_allocations['Commission Cost %'].min() * 100
-        ws['B' + str(row)] = f"{min_commission:.2f}%"
-        
-        row += 1
-        ws['A' + str(row)] = "Max Commission Rate"
-        max_commission = portfolio.deal_allocations['Commission Cost %'].max() * 100
-        ws['B' + str(row)] = f"{max_commission:.2f}%"
-        
-        row += 1
-        ws['A' + str(row)] = "Deals with 0% Commission"
-        zero_commission = (portfolio.deal_allocations['Commission Cost %'] == 0).sum()
-        ws['B' + str(row)] = f"{zero_commission} ({(zero_commission / len(portfolio.deal_allocations)) * 100:.1f}%)"
-    
-    # Add portfolio summary section if metrics are available
-    if portfolio.metrics:
-        row += 2
-        ws['A' + str(row)] = "Portfolio Summary"
-        ws['A' + str(row)].font = header_font
-        ws.cell(row=row, column=1).fill = header_fill
-        ws.cell(row=row, column=2).fill = header_fill
-        
-        row += 1
-        ws['A' + str(row)] = "Total Deals"
-        ws['B' + str(row)] = f"{portfolio.metrics['all']['deal_count']:,}"
-        
-        row += 1
-        ws['A' + str(row)] = "Total Allocated Amount"
-        if portfolio.deal_allocations is not None:
-            total_allocation = portfolio.deal_allocations['Allocation Amount'].sum()
-            ws['B' + str(row)] = f"${total_allocation:,.2f}"
-        
-        row += 1
-        ws['A' + str(row)] = "Total Investment"
-        ws['B' + str(row)] = f"${portfolio.metrics['all']['total_invested']:,.2f}"
-        
-        row += 1
-        ws['A' + str(row)] = "Total Return"
-        ws['B' + str(row)] = f"${portfolio.metrics['all']['total_returned']:,.2f}"
-        
-        row += 1
-        ws['A' + str(row)] = "MOIC"
-        ws['B' + str(row)] = f"{portfolio.metrics['all']['moic']:.2f}x"
-        
-        row += 1
-        ws['A' + str(row)] = "IRR"
-        if not np.isnan(portfolio.metrics['all'].get('irr', float('nan'))):
-            ws['B' + str(row)] = f"{portfolio.metrics['all']['irr']*100:.2f}%"
+        # Deal Size Range
+        if portfolio.selection_criteria.get('deal_size_range'):
+            min_size, max_size = portfolio.selection_criteria['deal_size_range']
+            deal_size_range = f"${min_size:,.2f} to ${max_size:,.2f}"
         else:
-            ws['B' + str(row)] = "N/A"
-    
-    return ws
+            deal_size_range = "All"
+        row = _add_label_value_row(ws, row, "Deal Size Range", deal_size_range)
+        
+        # Vintages
+        if portfolio.selection_criteria.get('vintage_range'):
+            start_date, end_date = portfolio.selection_criteria['vintage_range']
+            if isinstance(start_date, datetime):
+                start_date = start_date.strftime('%Y-%m-%d')
+            if isinstance(end_date, datetime):
+                end_date = end_date.strftime('%Y-%m-%d')
+            vintage_range = f"{start_date} to {end_date}"
+        else:
+            vintage_range = "All"
+        row = _add_label_value_row(ws, row, "Vintages", vintage_range)
+        
+        # Add allocation policy section
+        row += 1
+        row = _add_section_header(ws, row, "Allocation Policy")
+        
+        # Allocation Formula
+        min_amt = portfolio.allocation_policy.min_amount or 0
+        max_amt = portfolio.allocation_policy.max_amount or "∞"
+        pct = portfolio.allocation_policy.percentage * 100
+        
+        if min_amt > 0 and max_amt != "∞":
+            formula_str = f"MAX({min_amt:,.0f}, MIN({max_amt:,.0f}, {pct:.1f}%*DealSize))"
+        elif min_amt > 0:
+            formula_str = f"MAX({min_amt:,.0f}, {pct:.1f}%*DealSize)"
+        elif max_amt != "∞":
+            formula_str = f"MIN({max_amt:,.0f}, {pct:.1f}%*DealSize)"
+        else:
+            formula_str = f"{pct:.1f}%*DealSize"
+        
+        row = _add_label_value_row(ws, row, "Allocation Formula", formula_str)
+        
+        # Add fee structure section
+        row += 1
+        row = _add_section_header(ws, row, "Fee Structure")
+        
+        # Management Fee
+        fee_pct = portfolio.fee_schedule.percentage * 100
+        if portfolio.fee_schedule.apply_after_principal:
+            fee_desc = f"{fee_pct:.1f}% of incoming cashflows after principal repayment"
+        else:
+            fee_desc = f"{fee_pct:.1f}% of all incoming cashflows"
+        row = _add_label_value_row(ws, row, "Management Fee", fee_desc)
+        
+        # Add portfolio basic information
+        if portfolio.deal_allocations is not None:
+            row += 1
+            row = _add_section_header(ws, row, "Portfolio Summary")
+            
+            # Total Deals
+            row = _add_label_value_row(ws, row, "Total Deals", len(portfolio.deal_allocations))
+            
+            # Total Allocated Amount
+            total_allocation = portfolio.deal_allocations['Allocation Amount'].sum()
+            row = _add_label_value_row(
+                ws, row, "Total Allocated Amount", total_allocation, 
+                value_format=_format_money_cell
+            )
+        
+        return ws
+        
+    except Exception as e:
+        logger.error(f"Error creating Portfolio Scenario sheet: {str(e)}")
+        # Create a basic sheet with error message
+        ws = wb.create_sheet("Portfolio Scenario", 0)
+        ws.cell(row=1, column=1, value=f"Error creating sheet: {str(e)}")
+        return ws
 
 
 def _create_cashflows_sheet(wb, portfolio):
@@ -241,79 +463,68 @@ def _create_cashflows_sheet(wb, portfolio):
     Args:
         wb: Workbook object
         portfolio: Portfolio instance
+        
+    Returns:
+        Worksheet object
     """
-    ws = wb.create_sheet("Cashflows", 1)
-    
-    if portfolio.cashflows is None:
-        ws['A1'] = "No cashflow data available"
+    try:
+        ws = wb.create_sheet("Cashflows", 1)
+        
+        if portfolio.cashflows is None or portfolio.cashflows.empty:
+            ws.cell(row=1, column=1, value="No cashflow data available")
+            return ws
+        
+        # Set column widths
+        _set_column_widths(ws, {
+            'A': 15,  # Transaction Date
+            'B': 15,  # Funded ID
+            'C': 30,  # Transaction Description
+            'D': 15,  # Portfolio Amount
+            'E': 15,  # Fee Amount
+            'F': 15,  # Net Amount
+            'G': 10,  # Principal Repaid
+        })
+        
+        # Define columns to include
+        columns = ['Transaction Date', 'Funded ID', 'Transaction Description', 
+                'Portfolio Amount', 'Fee Amount', 'Net Amount', 'Principal Repaid']
+        
+        # Prepare cashflow data
+        cf_data = portfolio.cashflows.copy()
+        
+        # Sort by Transaction Date
+        cf_data = cf_data.sort_values('Transaction Date')
+        
+        # Convert dates to strings for Excel
+        cf_data['Transaction Date'] = cf_data['Transaction Date'].dt.strftime('%Y-%m-%d')
+        
+        # Define column formats
+        formats = {
+            'Transaction Date': lambda cell, value: _format_date_cell(cell, value),
+            'Portfolio Amount': _format_money_cell,
+            'Fee Amount': _format_money_cell,
+            'Net Amount': _format_money_cell,
+            'Principal Repaid': _format_boolean_cell  # Use the new helper function
+        }
+        
+        # Create the table
+        _create_table_from_df(
+            ws=ws,
+            df=cf_data,
+            start_row=1,
+            columns=columns,
+            formats=formats,
+            include_totals=True
+        )
+        
         return ws
-    
-    # Define styles
-    header_font = Font(bold=True, color="FFFFFF")
-    header_fill = PatternFill("solid", fgColor="4472C4")
-    money_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
-    
-    # Set column widths
-    column_widths = {
-        'A': 15,  # Transaction Date
-        'B': 15,  # Funded ID
-        'C': 30,  # Transaction Description
-        'D': 15,  # Portfolio Amount
-        'E': 15,  # Fee Amount
-        'F': 15,  # Net Amount
-        'G': 10,  # Principal Repaid
-    }
-    
-    for col, width in column_widths.items():
-        ws.column_dimensions[col].width = width
-    
-    # Define columns to include
-    columns = ['Transaction Date', 'Funded ID', 'Transaction Description', 
-               'Portfolio Amount', 'Fee Amount', 'Net Amount', 'Principal Repaid']
-    
-    # Add headers
-    for col_idx, col_name in enumerate(columns, 1):
-        cell = ws.cell(row=1, column=col_idx, value=col_name)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = Alignment(horizontal='center')
-    
-    # Prepare cashflow data
-    cf_data = portfolio.cashflows.copy()
-    
-    # Sort by Transaction Date
-    cf_data = cf_data.sort_values('Transaction Date')
-    
-    # Convert dates to strings for Excel
-    cf_data['Transaction Date'] = cf_data['Transaction Date'].dt.strftime('%Y-%m-%d')
-    
-    # Add data rows
-    for row_idx, row_data in enumerate(dataframe_to_rows(cf_data[columns], index=False, header=False), 2):
-        for col_idx, value in enumerate(row_data, 1):
-            cell = ws.cell(row=row_idx, column=col_idx, value=value)
-            
-            # Format currency columns
-            if col_idx in [4, 5, 6]:  # Amount columns
-                cell.number_format = money_format
-            
-            # Format boolean column
-            if col_idx == 7:  # Principal Repaid
-                cell.value = "Yes" if value else "No"
-                cell.alignment = Alignment(horizontal='center')
-    
-    # Add totals row at the bottom
-    row_idx = len(cf_data) + 2
-    ws.cell(row=row_idx, column=1, value="TOTAL")
-    ws.cell(row=row_idx, column=1).font = Font(bold=True)
-    
-    # Sum amount columns
-    for col_idx, col_name in [(4, 'Portfolio Amount'), (5, 'Fee Amount'), (6, 'Net Amount')]:
-        total = cf_data[col_name].sum()
-        cell = ws.cell(row=row_idx, column=col_idx, value=total)
-        cell.font = Font(bold=True)
-        cell.number_format = money_format
-    
-    return ws
+        
+    except Exception as e:
+        logger.error(f"Error creating Cashflows sheet: {str(e)}")
+        # Create a basic sheet with error message
+        ws = wb.create_sheet("Cashflows", 1)
+        ws.cell(row=1, column=1, value=f"Error creating sheet: {str(e)}")
+        return ws
 
 
 def _create_deals_sheet(wb, portfolio):
@@ -323,374 +534,73 @@ def _create_deals_sheet(wb, portfolio):
     Args:
         wb: Workbook object
         portfolio: Portfolio instance
-    """
-    ws = wb.create_sheet("Deals", 2)
-    
-    if portfolio.deal_allocations is None:
-        ws['A1'] = "No deal data available"
-        return ws
-    
-    # Define styles
-    header_font = Font(bold=True, color="FFFFFF")
-    header_fill = PatternFill("solid", fgColor="4472C4")
-    money_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
-    date_format = 'yyyy-mm-dd'
-    percent_format = '0.00%'
-    
-    # Set column widths
-    column_widths = {
-        'A': 15,  # Funded ID
-        'B': 15,  # Product
-        'C': 15,  # Initial Funding Date
-        'D': 12,  # Credit Tier
-        'E': 15,  # Total Original Balance
-        'F': 15,  # Total Original RTR
-        'G': 15,  # Commission Cost %
-        'H': 15,  # Allocation Amount
-        'I': 15,  # Allocation Percentage
-        'J': 15,  # Allocated RTR
-    }
-    
-    for col, width in column_widths.items():
-        ws.column_dimensions[col].width = width
-    
-    # Define columns to include - add Commission Cost % to the list
-    columns = [
-        'Funded ID', 'Product', 'Initial Funding Date', 'Credit_Tier', 
-        'Total Original Balance', 'Total Original RTR', 'Commission Cost %',
-        'Allocation Amount', 'Allocation Percentage', 'Allocated RTR'
-    ]
-    
-    # Check which columns are actually available
-    available_columns = [col for col in columns if col in portfolio.deal_allocations.columns]
-    
-    # Add headers
-    for col_idx, col_name in enumerate(available_columns, 1):
-        # Use more readable header names
-        display_name = col_name.replace('_', ' ')
-        cell = ws.cell(row=1, column=col_idx, value=display_name)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = Alignment(horizontal='center')
-    
-    # Prepare deal data
-    deal_data = portfolio.deal_allocations[available_columns].copy()
-    
-    # Sort by Initial Funding Date if available
-    if 'Initial Funding Date' in deal_data.columns:
-        deal_data = deal_data.sort_values('Initial Funding Date')
-        # Convert dates to strings for Excel
-        deal_data['Initial Funding Date'] = deal_data['Initial Funding Date'].dt.strftime('%Y-%m-%d')
-    
-    # Add data rows
-    for row_idx, row_data in enumerate(dataframe_to_rows(deal_data, index=False, header=False), 2):
-        for col_idx, value in enumerate(row_data, 1):
-            cell = ws.cell(row=row_idx, column=col_idx, value=value)
-            
-            # Format based on column type
-            col_name = available_columns[col_idx-1]
-            
-            # Format currency columns
-            if col_name in ['Total Original Balance', 'Total Original RTR', 'Allocation Amount', 'Allocated RTR']:
-                cell.number_format = money_format
-            
-            # Format percentage columns
-            if col_name in ['Allocation Percentage', 'Commission Cost %']:
-                cell.number_format = percent_format
-    
-    # Add totals row at the bottom
-    row_idx = len(deal_data) + 2
-    ws.cell(row=row_idx, column=1, value="TOTAL")
-    ws.cell(row=row_idx, column=1).font = Font(bold=True)
-    
-    # Sum amount columns
-    for col_idx, col_name in enumerate(available_columns, 1):
-        if col_name in ['Total Original Balance', 'Total Original RTR', 'Allocation Amount', 'Allocated RTR']:
-            total = deal_data[col_name].sum()
-            cell = ws.cell(row=row_idx, column=col_idx, value=total)
-            cell.font = Font(bold=True)
-            cell.number_format = money_format
-        elif col_name == 'Commission Cost %':
-            # For Commission Cost %, calculate the weighted average by deal size
-            if 'Total Original Balance' in deal_data.columns:
-                weighted_avg = (deal_data['Commission Cost %'] * deal_data['Total Original Balance']).sum() / deal_data['Total Original Balance'].sum()
-                cell = ws.cell(row=row_idx, column=col_idx, value=weighted_avg)
-                cell.font = Font(bold=True)
-                cell.number_format = percent_format
-    
-    return ws
-
-
-def _create_analysis_sheet(wb, portfolio):
-    """
-    Create the Analysis worksheet with IRR and MOIC calculations.
-    
-    Args:
-        wb: Workbook object
-        portfolio: Portfolio instance
-    """
-    ws = wb.create_sheet("Analysis", 3)
-    
-    if portfolio.metrics is None:
-        ws['A1'] = "No analysis data available"
-        return ws
-    
-    # Define styles
-    header_font = Font(bold=True)
-    header_fill = PatternFill("solid", fgColor="D9D9D9")
-    subheader_fill = PatternFill("solid", fgColor="E6E6E6")
-    money_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
-    
-    # Set column widths
-    for col in ['A', 'B', 'C']:
-        ws.column_dimensions[col].width = 20
-    
-    # Add title
-    ws['A1'] = "Portfolio Performance Analysis"
-    ws['A1'].font = Font(bold=True, size=14)
-    
-    # Overall performance section
-    row = 3
-    ws['A' + str(row)] = "Overall Performance"
-    ws['A' + str(row)].font = header_font
-    ws.merge_cells(f'A{row}:C{row}')
-    ws.cell(row=row, column=1).fill = header_fill
-    
-    row += 1
-    ws['A' + str(row)] = "Metric"
-    ws['B' + str(row)] = "Value"
-    for col in range(1, 3):
-        ws.cell(row=row, column=col).font = header_font
-        ws.cell(row=row, column=col).fill = subheader_fill
-    
-    # Add overall metrics
-    metrics = [
-        ('Deal Count', portfolio.metrics['all']['deal_count']),
-        ('Total Invested', portfolio.metrics['all']['total_invested']),
-        ('Total Returned', portfolio.metrics['all']['total_returned']),
-        ('Net Cashflow', portfolio.metrics['all']['net_cashflow']),
-        ('MOIC', portfolio.metrics['all']['moic']),
-        ('IRR', portfolio.metrics['all'].get('irr', float('nan'))),
-    ]
-    
-    for metric_name, metric_value in metrics:
-        row += 1
-        ws['A' + str(row)] = metric_name
         
-        if metric_name in ['Total Invested', 'Total Returned', 'Net Cashflow']:
-            ws.cell(row=row, column=2, value=metric_value)
-            ws.cell(row=row, column=2).number_format = money_format
-        elif metric_name == 'MOIC':
-            ws.cell(row=row, column=2, value=metric_value)
-            ws.cell(row=row, column=2).number_format = '0.00x'
-        elif metric_name == 'IRR':
-            if not np.isnan(metric_value):
-                ws.cell(row=row, column=2, value=metric_value)
-                ws.cell(row=row, column=2).number_format = '0.00%'
-            else:
-                ws.cell(row=row, column=2, value="N/A")
-        else:
-            ws.cell(row=row, column=2, value=metric_value)
-    
-    # Vintage Performance section - calculate IRR and MOIC by vintage month
-    if portfolio.cashflows is not None and portfolio.deal_allocations is not None:
-        # Add a title for the vintage analysis section
-        row += 2
-        ws['A' + str(row)] = "Performance by Monthly Vintage"
-        ws['A' + str(row)].font = header_font
-        ws.merge_cells(f'A{row}:C{row}')
-        ws.cell(row=row, column=1).fill = header_fill
-        
-        row += 1
-        headers = ['Vintage', 'IRR', 'MOIC']
-        for col_idx, header in enumerate(headers, 1):
-            cell = ws.cell(row=row, column=col_idx, value=header)
-            cell.font = header_font
-            cell.fill = subheader_fill
-        
-        # Calculate performance by vintage month
-        try:
-            # Check if we have 'Vintage-M' in the cashflows data
-            if 'Vintage-M' in portfolio.cashflows.columns:
-                # Group cashflows by vintage and calculate metrics
-                vintage_data = []
-                
-                # Get unique vintages
-                unique_vintages = portfolio.cashflows['Vintage-M'].unique()
-                
-                for vintage in sorted(unique_vintages):
-                    # Get cashflows for this vintage
-                    vintage_cf = portfolio.cashflows[portfolio.cashflows['Vintage-M'] == vintage]
-                    
-                    # Group by date and sum amounts
-                    cf_by_date = vintage_cf.groupby('Transaction Date')['Net Amount'].sum().reset_index()
-                    cf_by_date = cf_by_date.sort_values('Transaction Date')
-                    
-                    # Calculate metrics
-                    total_in = vintage_cf[vintage_cf['Net Amount'] > 0]['Net Amount'].sum()
-                    total_out = abs(vintage_cf[vintage_cf['Net Amount'] < 0]['Net Amount'].sum())
-                    
-                    if total_out > 0:
-                        moic = total_in / total_out
-                    else:
-                        moic = float('nan')
-                    
-                    # Calculate IRR if possible
-                    cf_amounts = cf_by_date['Net Amount'].tolist()
-                    irr = float('nan')
-                    
-                    if len(cf_amounts) > 1 and not all(amt >= 0 for amt in cf_amounts):
-                        try:
-                            # Use numpy's IRR function
-                            monthly_irr = np.irr(cf_amounts)
-                            # Annualize the IRR
-                            irr = (1 + monthly_irr) ** 12 - 1
-                        except:
-                            pass
-                    
-                    vintage_data.append({
-                        'Vintage': vintage,
-                        'IRR': irr,
-                        'MOIC': moic,
-                        'Invested': total_out,
-                        'Returned': total_in
-                    })
-                
-                # Sort by vintage
-                vintage_data = sorted(vintage_data, key=lambda x: x['Vintage'])
-                
-                # Add vintage data rows
-                for vintage_metrics in vintage_data:
-                    row += 1
-                    ws.cell(row=row, column=1, value=vintage_metrics['Vintage'])
-                    
-                    # IRR
-                    if not np.isnan(vintage_metrics['IRR']):
-                        ws.cell(row=row, column=2, value=vintage_metrics['IRR'])
-                        ws.cell(row=row, column=2).number_format = '0.00%'
-                    else:
-                        ws.cell(row=row, column=2, value="N/A")
-                    
-                    # MOIC
-                    if not np.isnan(vintage_metrics['MOIC']):
-                        ws.cell(row=row, column=3, value=vintage_metrics['MOIC'])
-                        ws.cell(row=row, column=3).number_format = '0.00x'
-                    else:
-                        ws.cell(row=row, column=3, value="N/A")
-                
-                # Add vintage performance charts
-                if len(vintage_data) > 1:
-                    # Add IRR chart
-                    _add_vintage_chart(
-                        ws, 
-                        vintage_data, 
-                        "IRR by Vintage", 
-                        "IRR", 
-                        'E5', 
-                        percentage=True
-                    )
-                    
-                    # Add MOIC chart
-                    _add_vintage_chart(
-                        ws, 
-                        vintage_data, 
-                        "MOIC by Vintage", 
-                        "MOIC", 
-                        'E20', 
-                        percentage=False
-                    )
-            
-        except Exception as e:
-            # Handle any errors in vintage performance calculation
-            row += 1
-            ws.cell(row=row, column=1, value=f"Error calculating vintage performance: {str(e)}")
-    
-    return ws
-
-
-def _add_vintage_chart(ws, vintage_data, title, metric_name, position, percentage=False):
+    Returns:
+        Worksheet object
     """
-    Add a line chart for vintage performance.
-    
-    Args:
-        ws: Worksheet object
-        vintage_data: List of dicts with vintage performance data
-        title: Chart title
-        metric_name: Name of the metric to chart
-        position: Chart position (cell reference)
-        percentage: Whether the metric is a percentage
-    """
-    # Add a data range for the chart
-    row_offset = ws.max_row + 2
-    ws.cell(row=row_offset, column=1, value="Vintage")
-    ws.cell(row=row_offset, column=2, value=metric_name)
-    
-    # Add data rows
-    for i, v_data in enumerate(vintage_data, 1):
-        ws.cell(row=row_offset+i, column=1, value=v_data['Vintage'])
+    try:
+        ws = wb.create_sheet("Deals", 2)
         
-        if not np.isnan(v_data[metric_name]):
-            ws.cell(row=row_offset+i, column=2, value=v_data[metric_name])
-            if percentage:
-                ws.cell(row=row_offset+i, column=2).number_format = '0.00%'
-            else:
-                ws.cell(row=row_offset+i, column=2).number_format = '0.00x'
-    
-    # Create chart
-    chart = LineChart()
-    chart.title = title
-    chart.style = 2  # Choose the style you want
-    chart.x_axis.title = "Vintage"
-    chart.y_axis.title = metric_name
-    
-    # Configure data
-    data = Reference(ws, min_col=2, min_row=row_offset, max_row=row_offset+len(vintage_data))
-    chart.add_data(data, titles_from_data=True)
-    
-    # Configure categories (vintage)
-    cats = Reference(ws, min_col=1, min_row=row_offset+1, max_row=row_offset+len(vintage_data))
-    chart.set_categories(cats)
-    
-    # Add markers to the lines
-    s = chart.series[0]
-    s.marker = Marker(symbol="circle")
-    s.marker.size = 7
-    
-    # Add the chart to the worksheet
-    ws.add_chart(chart, position)
-    
-    return chart
-
-
-if __name__ == "__main__":
-    # Example usage
-    from data_loader import load_data
-    from portfolio_simulator import Portfolio, AllocationPolicy, FeeSchedule
-    
-    # Load data
-    deals_df, payments_df = load_data()
-    
-    # Create and simulate a portfolio
-    portfolio = Portfolio(
-        name="Test Portfolio",
-        selection_criteria={
-            'product_types': ['RBF'],
-            'deal_size_range': (100000, 500000),
-            'vintage_range': ('2023-01-01', '2023-12-31')
-        },
-        allocation_policy=AllocationPolicy(
-            percentage=0.25, 
-            min_amount=100000, 
-            max_amount=1500000
-        ),
-        fee_schedule=FeeSchedule(
-            percentage=0.02,
-            apply_after_principal=True
+        if portfolio.deal_allocations is None or portfolio.deal_allocations.empty:
+            ws.cell(row=1, column=1, value="No deal data available")
+            return ws
+        
+        # Set column widths
+        _set_column_widths(ws, {
+            'A': 15,  # Funded ID
+            'B': 15,  # Product
+            'C': 15,  # Initial Funding Date
+            'D': 12,  # Credit Tier
+            'E': 15,  # Total Original Balance
+            'F': 15,  # Total Original RTR
+            'G': 15,  # Commission Cost %
+            'H': 15,  # Allocation Amount
+            'I': 15,  # Allocation Percentage
+            'J': 15,  # Allocated RTR
+        })
+        
+        # Define columns to include
+        columns = [
+            'Funded ID', 'Product', 'Initial Funding Date', 'Credit_Tier', 
+            'Total Original Balance', 'Total Original RTR', 'Commission Cost %',
+            'Allocation Amount', 'Allocation Percentage', 'Allocated RTR'
+        ]
+        
+        # Prepare deal data
+        deal_data = portfolio.deal_allocations.copy()
+        
+        # Sort by Initial Funding Date if available
+        if 'Initial Funding Date' in deal_data.columns:
+            deal_data = deal_data.sort_values('Initial Funding Date')
+            # Convert dates to strings for Excel
+            deal_data['Initial Funding Date'] = deal_data['Initial Funding Date'].dt.strftime('%Y-%m-%d')
+        
+        # Define column formats
+        formats = {
+            'Initial Funding Date': lambda cell, value: _format_date_cell(cell, value),
+            'Total Original Balance': _format_money_cell,
+            'Total Original RTR': _format_money_cell,
+            'Allocation Amount': _format_money_cell,
+            'Allocation Percentage': _format_percent_cell,
+            'Commission Cost %': _format_percent_cell,
+            'Allocated RTR': _format_money_cell
+        }
+        
+        # Create the table
+        _create_table_from_df(
+            ws=ws,
+            df=deal_data,
+            start_row=1,
+            columns=columns,
+            formats=formats,
+            include_totals=True
         )
-    )
-    
-    # Simulate the portfolio
-    portfolio.simulate(deals_df, payments_df)
-    
-    # Export to Excel
-    export_portfolio_to_excel(portfolio, "test_portfolio_export.xlsx", verbose=True)
+        
+        return ws
+        
+    except Exception as e:
+        logger.error(f"Error creating Deals sheet: {str(e)}")
+        # Create a basic sheet with error message
+        ws = wb.create_sheet("Deals", 2)
+        ws.cell(row=1, column=1, value=f"Error creating sheet: {str(e)}")
+        return ws
