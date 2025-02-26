@@ -10,7 +10,7 @@ import os
 from datetime import datetime
 
 
-def setup_logging(name, level=logging.INFO, log_to_file=False, log_dir='logs'):
+def setup_logging(name, level=logging.INFO, log_to_file=False, log_dir='logs', log_file=None):
     """
     Set up logging for a module.
     
@@ -19,6 +19,7 @@ def setup_logging(name, level=logging.INFO, log_to_file=False, log_dir='logs'):
         level: Logging level
         log_to_file: Whether to log to a file in addition to console
         log_dir: Directory for log files if log_to_file is True
+        log_file: Specific log filename to use (if None, generates one based on name and timestamp)
         
     Returns:
         Logger instance
@@ -42,18 +43,23 @@ def setup_logging(name, level=logging.INFO, log_to_file=False, log_dir='logs'):
         
         # Add file handler if requested
         if log_to_file:
-            # Create logs directory if it doesn't exist - use absolute path
+            # Convert relative log_dir path to be relative to the script directory
             if not os.path.isabs(log_dir):
                 script_dir = os.path.dirname(os.path.abspath(__file__))
                 log_dir = os.path.join(script_dir, log_dir)
-                
+            
+            # Create logs directory if it doesn't exist
             if not os.path.exists(log_dir):
                 os.makedirs(log_dir)
             
-            # Create file handler with timestamp in filename
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            log_file = os.path.join(log_dir, f'{name}_{timestamp}.log')
-            file_handler = logging.FileHandler(log_file)
+            # Create file handler with specified filename or timestamp
+            if log_file:
+                log_path = os.path.join(log_dir, log_file)
+            else:
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                log_path = os.path.join(log_dir, f'{name}_{timestamp}.log')
+                
+            file_handler = logging.FileHandler(log_path)
             file_handler.setLevel(level)
             file_handler.setFormatter(formatter)
             

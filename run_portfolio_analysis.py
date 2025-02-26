@@ -23,8 +23,7 @@ from excel_exporter import export_portfolio_to_excel
 from common_utils import setup_logging, MCASimulatorError, ConfigurationError, DataError, SimulationError, ExportError
 
 # Set up logger
-logger = setup_logging(__name__, log_to_file=True)
-
+logger = None
 
 def parse_arguments():
     """Parse command-line arguments."""
@@ -60,7 +59,10 @@ def parse_arguments():
                         help='Display verbose output')
     parser.add_argument('--compare', action='store_true',
                         help='Run comparative analysis instead of single portfolio')
-    
+	# Add log file argument
+    parser.add_argument('--log-file', 
+                        help='Log file name (defaults to same name as output file)')
+	
     return parser.parse_args()
 
 
@@ -390,6 +392,17 @@ def main():
         # Parse command-line arguments
         args = parse_arguments()
         
+        # Set log file name (based on output file if not specified)
+        log_file = args.log_file
+        if not log_file and args.output_file:
+            # Use the output filename base with .log extension
+            base_name = os.path.splitext(args.output_file)[0]
+            log_file = f"{base_name}.log"
+        
+        # Configure logger with the log file
+        global logger
+        logger = setup_logging(__name__, log_to_file=True, log_file=log_file)
+        
         # Configure log level based on verbose flag
         log_level = logging.DEBUG if args.verbose else logging.INFO
         for handler in logger.handlers:
@@ -406,7 +419,10 @@ def main():
         return 0
         
     except FileNotFoundError as e:
-        logger.error(f"File not found: {str(e)}")
+        if logger:
+            logger.error(f"File not found: {str(e)}")
+        else:
+            print(f"File not found: {str(e)}")
         return 1
         
     except ConfigurationError as e:
