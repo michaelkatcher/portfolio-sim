@@ -627,20 +627,24 @@ def _create_portfolio_scenario_sheet(wb, portfolio):
             ws.column_dimensions['D'].width = 15  # Date
             ws.column_dimensions['E'].width = 25  # Funded
             ws.column_dimensions['F'].width = 25  # Balance
+            ws.column_dimensions['G'].width = 25
+            ws.column_dimensions['H'].width = 25
 
-            # Add Portfolio History header (merged across columns D-F)
+            # Add Portfolio History header (merged across columns D-h)
             history_header_row = 3
             ws.cell(row=history_header_row, column=4, value="Portfolio History")
             ws.cell(row=history_header_row, column=4).font = Font(bold=True)
             ws.cell(row=history_header_row, column=4).fill = PatternFill("solid", fgColor="D9D9D9")
-            ws.merge_cells(start_row=history_header_row, start_column=4, end_row=history_header_row, end_column=6)
+            ws.merge_cells(start_row=history_header_row, start_column=4, end_row=history_header_row, end_column=8)
             ws.cell(row=history_header_row, column=4).alignment = Alignment(horizontal='center')
 
             # Add column headers
             header_row = history_header_row + 1
             ws.cell(row=header_row, column=4, value="Date").font = Font(bold=True)
-            ws.cell(row=header_row, column=5, value="Funded").font = Font(bold=True)
-            ws.cell(row=header_row, column=6, value="Balance").font = Font(bold=True)
+            ws.cell(row=header_row, column=5, value="Starting Balance").font = Font(bold=True)
+            ws.cell(row=header_row, column=6, value="Funding").font = Font(bold=True)
+            ws.cell(row=header_row, column=7, value="Remittances").font = Font(bold=True)
+            ws.cell(row=header_row, column=8, value="Ending Balance").font = Font(bold=True)
 
             # Determine start date (from vintage_range if available, otherwise use a default)
             if portfolio.selection_criteria.get('vintage_range'):
@@ -667,14 +671,29 @@ def _create_portfolio_scenario_sheet(wb, portfolio):
                 date_cell.value = date_formula
                 date_cell.number_format = "m/d/yyyy"
                 
+                # Starting Balance formula
+                starting_balance_cell = ws.cell(row=current_row, column= 5)
+                if i == 0:
+                    starting_balance_formula = f"=0"
+                else: 
+                    starting_balance_formula = f"=$H{current_row-1}"
+                starting_balance_cell.value = starting_balance_formula
+                starting_balance_cell.number_format = EXCEL['CURRENCY_FORMAT']
+
                 # Funded formula (sum of allocations by month)
-                funded_cell = ws.cell(row=current_row, column=5)
-                funded_formula = f"=SUMIFS(Deals!$G:$G,Deals!$C:$C,\">=\"&DATE(YEAR(D{current_row}),MONTH(D{current_row}),1),Deals!$C:$C,\"<=\"&D{current_row})"
+                funded_cell = ws.cell(row=current_row, column=6)
+                funded_formula = f"=-SUMIFS(Cashflows!$E:$E,Cashflows!$D:$D,\"Initial cash outlay\",Cashflows!$B:$B,\">=\"&DATE(YEAR(D{current_row}),MONTH(D{current_row}),1),Cashflows!$B:$B,\"<=\"&D{current_row})"
                 funded_cell.value = funded_formula
                 funded_cell.number_format = EXCEL['CURRENCY_FORMAT']
                 
-                # Balance formula (sum of cashflow amounts as of date)
-                balance_cell = ws.cell(row=current_row, column=6)
+                # Remittances formula
+                remittance_cell = ws.cell(row=current_row,column=7)
+                remittance_formula = f"=$H{current_row}-$E{current_row}-$F{current_row}"
+                remittance_cell.value = remittance_formula
+                remittance_cell.number_format = EXCEL['CURRENCY_FORMAT']
+                
+                # Ending Balance formula
+                balance_cell = ws.cell(row=current_row, column=8)
                 balance_formula = f"=-SUMIFS(Cashflows!$E:$E,Cashflows!$A:$A,\"<=\"&$D{current_row})"
                 balance_cell.value = balance_formula
                 balance_cell.number_format = EXCEL['CURRENCY_FORMAT']
