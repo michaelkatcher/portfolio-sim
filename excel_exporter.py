@@ -18,7 +18,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.formula.translate import Translator
 
 from common_utils import setup_logging, ExportError
-from constants import DEAL_COLUMNS, PAYMENT_COLUMNS
+from constants import DEAL_COLUMNS, PAYMENT_COLUMNS, EXCEL
 
 # Set up logger
 logger = setup_logging(__name__)
@@ -142,7 +142,7 @@ def _format_money_cell(cell, value):
     """
     try:
         cell.value = value
-        cell.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
+        cell.number_format = '"$"#,##0_);("$"#,##0);"-"'
         return cell
     except Exception as e:
         logger.warning(f"Error formatting money cell: {str(e)}")
@@ -491,13 +491,23 @@ def _create_portfolio_scenario_sheet(wb, portfolio):
             deals_sheet = wb["Deals"]
             
             # Find allocation amount column in Deals sheet
-            allocation_col = None
+            
             for col in range(1, deals_sheet.max_column + 1):
                 if deals_sheet.cell(row=1, column=col).value == "Allocation Amount":
                     allocation_col = get_column_letter(col)
                     break
                     
-            # Find portfolio amount, transaction date and funded date columns in Cashflows sheet
+            # Find columns in Deal sheet
+            allocation_col = None
+            deal_size_col = None
+            for col in range(1, deals_sheet.max_column + 1):
+                header = deals_sheet.cell(row=1, column=col).value
+                if header == "Allocation Amount":
+                    allocation_col = get_column_letter(col)
+                elif header == "Total Original Balance":
+                    deal_size_col = get_column_letter(col)
+                
+            # Find columns in Cashflows sheet
             portfolio_amt_col = None
             date_col = None
             funded_dt_col = None
@@ -510,6 +520,16 @@ def _create_portfolio_scenario_sheet(wb, portfolio):
                 elif header == "Funded Date":
                     funded_dt_col = get_column_letter(col)
                     
+            # Total Deal Size formula       
+            # SUM formula using the found column
+            deal_size_formula = f"=SUM(Deals!{deal_size_col}:{deal_size_col})"
+            row = _add_label_value_row(
+                ws, row, "Total Deal Size", 
+                formula=deal_size_formula
+            )
+            # Apply currency formatting
+            ws.cell(row=row-1, column=2).number_format = EXCEL['CURRENCY_FORMAT']
+            
             # Total Allocated Amount formula
             if allocation_col:
                 # SUM formula using the found column
@@ -519,7 +539,7 @@ def _create_portfolio_scenario_sheet(wb, portfolio):
                     formula=allocation_formula
                 )
                 # Apply currency formatting
-                ws.cell(row=row-1, column=2).number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
+                ws.cell(row=row-1, column=2).number_format = EXCEL['CURRENCY_FORMAT']
             else:
                 # Fallback to hardcoded value if column not found
                 total_allocation = portfolio.deal_allocations['Allocation Amount'].sum()
@@ -527,6 +547,27 @@ def _create_portfolio_scenario_sheet(wb, portfolio):
                     ws, row, "Total Allocated Amount", total_allocation, 
                     value_format=_format_money_cell
                 )
+            
+            # Average Deal Size formula
+            avg_deal_size_formula = f"=B{row-2}/B{row-3}"
+            row = _add_label_value_row(
+                ws, row, "Avg Deal Size", 
+                formula=avg_deal_size_formula)
+            ws.cell(row=row-1, column=2).number_format = EXCEL['CURRENCY_FORMAT']
+                
+            # Average Allocation Amount formula
+            avg_allocation_formula = f"=B{row-2}/B{row-4}"
+            row = _add_label_value_row(
+                ws, row, "Avg Allocation Amount", 
+                formula=avg_allocation_formula)
+            ws.cell(row=row-1, column=2).number_format = EXCEL['CURRENCY_FORMAT']
+                
+            # Average Deal % formula
+            avg_deal_pct_formula = f"=B{row-1}/B{row-2}"
+            row = _add_label_value_row(
+                ws, row, "Avg Deal %", 
+                formula=avg_deal_pct_formula)
+            ws.cell(row=row-1, column=2).number_format = "0.0%"
             
             # Add IRR formula if we have cashflow data with dates
             if portfolio_amt_col and date_col:
@@ -630,13 +671,13 @@ def _create_portfolio_scenario_sheet(wb, portfolio):
                 funded_cell = ws.cell(row=current_row, column=5)
                 funded_formula = f"=SUMIFS(Deals!$G:$G,Deals!$C:$C,\">=\"&DATE(YEAR(D{current_row}),MONTH(D{current_row}),1),Deals!$C:$C,\"<=\"&D{current_row})"
                 funded_cell.value = funded_formula
-                funded_cell.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
+                funded_cell.number_format = EXCEL['CURRENCY_FORMAT']
                 
                 # Balance formula (sum of cashflow amounts as of date)
                 balance_cell = ws.cell(row=current_row, column=6)
                 balance_formula = f"=-SUMIFS(Cashflows!$E:$E,Cashflows!$A:$A,\"<=\"&$D{current_row})"
                 balance_cell.value = balance_formula
-                balance_cell.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
+                balance_cell.number_format = EXCEL['CURRENCY_FORMAT']
             
         return ws
         

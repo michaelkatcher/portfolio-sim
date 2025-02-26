@@ -34,20 +34,27 @@ def load_data(data_file='data.csv', payments_file='payments.csv', verbose=False)
         DataError: If data files can't be loaded or processed
         FileNotFoundError: If input files don't exist
     """
+    # Get the directory where data_loader.py is located
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Create paths to data files in the raw_data subdirectory
+    data_path = os.path.join(script_dir, 'raw_data', data_file)
+    payments_path = os.path.join(script_dir, 'raw_data', payments_file)
+    
     # Check if files exist
-    if not os.path.exists(data_file):
-        raise FileNotFoundError(f"Deals data file not found: {data_file}")
+    if not os.path.exists(data_path):
+        raise FileNotFoundError(f"Deals data file not found: {data_path}")
         
-    if not os.path.exists(payments_file):
-        raise FileNotFoundError(f"Payments data file not found: {payments_file}")
+    if not os.path.exists(payments_path):
+        raise FileNotFoundError(f"Payments data file not found: {payments_path}")
     
     if verbose:
-        logger.info(f"Loading data from files: {data_file} and {payments_file}")
+        logger.info(f"Loading data from files: {data_path} and {payments_path}")
     
     try:
         # Load deals data (data.csv)
         deals_df = pd.read_csv(
-            data_file,
+            data_path,
             dtype={
                 DEAL_COLUMNS['ID']: str,
                 DEAL_COLUMNS['PRODUCT']: str,
@@ -59,14 +66,14 @@ def load_data(data_file='data.csv', payments_file='payments.csv', verbose=False)
         
         # Check if the file was loaded properly
         if deals_df.empty:
-            raise DataError(f"Deals data file is empty: {data_file}")
+            raise DataError(f"Deals data file is empty: {data_path}")
     except Exception as e:
         raise DataError(f"Error loading deals data: {str(e)}") from e
     
     try:
         # Load payments data (payments.csv)
         payments_df = pd.read_csv(
-            payments_file,
+            payments_path,
             dtype={
                 'Vintage': str,
                 PAYMENT_COLUMNS['VINTAGE_MONTH']: str,
@@ -79,7 +86,7 @@ def load_data(data_file='data.csv', payments_file='payments.csv', verbose=False)
         
         # Check if the file was loaded properly
         if payments_df.empty:
-            raise DataError(f"Payments data file is empty: {payments_file}")
+            raise DataError(f"Payments data file is empty: {payments_path}")
     except Exception as e:
         raise DataError(f"Error loading payments data: {str(e)}") from e
     
@@ -87,8 +94,8 @@ def load_data(data_file='data.csv', payments_file='payments.csv', verbose=False)
         # Process deals data
         _process_deals_data(deals_df, verbose)
         
-        # Process payments data
-        _process_payments_data(payments_df, deals_df, verbose)
+        # Process payments data - capture the return value as you mentioned
+        payments_df = _process_payments_data(payments_df, deals_df, verbose)
         
         # Validate data integrity
         if not test_data_integrity(deals_df, payments_df, log_warnings=verbose):
@@ -156,30 +163,24 @@ def _process_payments_data(payments_df, deals_df, verbose=False):
         payments_df: DataFrame containing payment transactions
         deals_df: DataFrame containing deal information
         verbose: Whether to log detailed information
+        
+    Returns:
+        DataFrame with processed payment data (added this return)
     """
-    # Convert Transaction Amount to numeric
-    if PAYMENT_COLUMNS['AMOUNT'] in payments_df.columns:
-        payments_df[PAYMENT_COLUMNS['AMOUNT']] = pd.to_numeric(payments_df[PAYMENT_COLUMNS['AMOUNT']], errors='coerce')
+    # [existing code]
     
     # Store original Transaction Amount values for comparison
     payments_df['Original Transaction Amount'] = payments_df[PAYMENT_COLUMNS['AMOUNT']]
     
     # Recalculate initial cash outlay values based on Commission Cost %
     try:
-        _recalculate_cash_outlays(payments_df, deals_df, verbose)
+        payments_df = _recalculate_cash_outlays(payments_df, deals_df, verbose)  # Capture the return value
     except Exception as e:
         logger.warning(f"Error recalculating cash outlays: {str(e)}")
     
-    if verbose:
-        # Log data types
-        logger.info("\nPayments DataFrame data types:")
-        for col, dtype in payments_df.dtypes.items():
-            logger.info(f"  {col}: {dtype}")
-        
-        # Log transaction types
-        if PAYMENT_COLUMNS['DESCRIPTION'] in payments_df.columns:
-            logger.info("\nTransaction type distribution:")
-            logger.info(payments_df[PAYMENT_COLUMNS['DESCRIPTION']].value_counts())
+    # [rest of existing code]
+    
+    return payments_df  # Explicitly return the modified dataframe
 
 
 def _recalculate_cash_outlays(payments_df, deals_df, verbose=False):
@@ -222,6 +223,8 @@ def _recalculate_cash_outlays(payments_df, deals_df, verbose=False):
         if verbose:
             n_updated = initial_outlay_mask.sum()
             logger.info(f"\nRecalculated {n_updated} initial cash outlay transactions based on Commission Cost %")
+    
+    return payments_df  # Explicitly return the modified dataframe
 
 
 def test_data_integrity(deals_df, payments_df, log_warnings=True):

@@ -74,12 +74,18 @@ def ensure_directory(directory):
     Raises:
         OSError: If directory creation fails
     """
+    # Convert relative paths to be relative to the script directory
+    if not os.path.isabs(directory):
+        directory = os.path.join(get_script_dir(), directory)
+        
     if not os.path.exists(directory):
         try:
             os.makedirs(directory)
             logger.info(f"Created directory: {directory}")
         except Exception as e:
             raise OSError(f"Failed to create directory {directory}: {str(e)}")
+    
+    return directory  # Return the full path
 
 
 def validate_arguments(args):
@@ -92,12 +98,8 @@ def validate_arguments(args):
     Raises:
         ConfigurationError: If arguments are invalid
     """
-    # Check file paths
-    if not os.path.exists(args.data_file):
-        raise ConfigurationError(f"Data file not found: {args.data_file}")
-    
-    if not os.path.exists(args.payments_file):
-        raise ConfigurationError(f"Payments file not found: {args.payments_file}")
+    # Remove the file path checks since we'll handle file paths in data_loader.py
+    # No need to check if files exist here anymore
     
     # Check numeric ranges
     if args.allocation_pct is not None and (args.allocation_pct <= 0 or args.allocation_pct > 1):
@@ -134,6 +136,9 @@ def validate_arguments(args):
         except ValueError as e:
             raise ConfigurationError(f"Invalid date format: {str(e)}")
 
+def get_script_dir():
+    """Get the directory where the script is located."""
+    return os.path.dirname(os.path.abspath(__file__))
 
 def run_single_portfolio(args):
     """
@@ -158,18 +163,24 @@ def run_single_portfolio(args):
         payments_file=args.payments_file,
         verbose=args.verbose
     )
-    # After loading data
-    debug_payment_matching(deals_df, payments_df, args.product_types)
-
     # Prepare selection criteria
     selection_criteria = {}
     if args.product_types:
         selection_criteria['product_types'] = args.product_types
         logger.info(f"Using product types filter: {args.product_types}")
     
-    if args.min_size is not None and args.max_size is not None:
-        selection_criteria['deal_size_range'] = (args.min_size, args.max_size)
-        logger.info(f"Using deal size range: ${args.min_size:,.2f} to ${args.max_size:,.2f}")
+    # Modified code to handle single min or max size
+    if args.min_size is not None or args.max_size is not None:
+        min_size = args.min_size if args.min_size is not None else 0
+        max_size = args.max_size if args.max_size is not None else float('inf')
+        selection_criteria['deal_size_range'] = (min_size, max_size)
+        
+        if args.max_size is None:
+            logger.info(f"Using deal size range: ${min_size:,.2f} and above")
+        elif args.min_size is None:
+            logger.info(f"Using deal size range: up to ${max_size:,.2f}")
+        else:
+            logger.info(f"Using deal size range: ${min_size:,.2f} to ${max_size:,.2f}")
     
     if args.vintage_start and args.vintage_end:
         selection_criteria['vintage_range'] = (args.vintage_start, args.vintage_end)
@@ -215,8 +226,8 @@ def run_single_portfolio(args):
         logger.warning("No cashflows generated for portfolio.")
     
     # Ensure output directory exists
-    ensure_directory(args.output_dir)
-    output_path = os.path.join(args.output_dir, args.output_file)
+    output_dir = ensure_directory(args.output_dir)  
+    output_path = os.path.join(output_dir, args.output_file)
     
     # Export to Excel
     logger.info(f"Exporting results to {output_path}...")
@@ -372,43 +383,6 @@ def run_comparative_analysis(args):
     logger.info(f"Results saved to: {os.path.abspath(output_dir)}")
     
     return generated_portfolios
-
-def debug_payment_matching(deals_df, payments_df, product_types=None):
-    """Debug payment matching issues with focus on product types."""
-    # Filter for specific product types if provided
-    if product_types:
-        filtered_deals = deals_df[deals_df['Product'].isin(product_types)]
-        logger.info(f"Selected {len(filtered_deals)} {', '.join(product_types)} deals from {len(deals_df)} total deals")
-    else:
-        filtered_deals = deals_df
-    
-    # Get selected deal IDs
-    deal_ids = filtered_deals['Funded ID'].unique()
-    
-    # Check transaction types in entire payments dataset
-    logger.info(f"Transaction types in entire payments dataset:")
-    logger.info(payments_df['Transaction Description'].value_counts().to_dict())
-    
-    # Check for payments for the filtered deals
-    filtered_payments = payments_df[payments_df['Funded ID'].isin(deal_ids)]
-    logger.info(f"Found {len(filtered_payments)} payment records for the {len(deal_ids)} selected deals")
-    
-    # Check transaction types for filtered deals
-    logger.info(f"Transaction types for filtered deals:")
-    logger.info(filtered_payments['Transaction Description'].value_counts().to_dict())
-    
-    # Calculate payments per deal
-    payments_per_deal = filtered_payments.groupby('Funded ID').size()
-    logger.info(f"Payment records per deal: min={payments_per_deal.min()}, max={payments_per_deal.max()}, avg={payments_per_deal.mean():.1f}")
-    
-    # Count deals with multiple transaction types
-    deals_with_multiple_types = 0
-    for deal_id in deal_ids:
-        deal_payments = filtered_payments[filtered_payments['Funded ID'] == deal_id]
-        if len(deal_payments['Transaction Description'].unique()) > 1:
-            deals_with_multiple_types += 1
-    
-    logger.info(f"Deals with multiple transaction types: {deals_with_multiple_types} of {len(deal_ids)} ({deals_with_multiple_types/len(deal_ids)*100:.1f}%)")
 
 def main():
     """Main entry point."""

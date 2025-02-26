@@ -65,13 +65,23 @@ class AllocationPolicy:
             logger.warning(f"Received non-positive deal size: {deal_size}. Using 0 allocation.")
             return 0
             
+        # Start with the percentage-based allocation
         allocation = deal_size * self.percentage
         
+        # Apply min amount constraint, but don't exceed deal size
         if self.min_amount is not None:
-            allocation = max(self.min_amount, allocation)
+            allocation = min(deal_size, max(self.min_amount, allocation))
         
+        # Apply max amount constraint
         if self.max_amount is not None:
             allocation = min(self.max_amount, allocation)
+        
+        # Safety check - don't allocate more than the deal size
+        allocation = min(allocation, deal_size)
+        
+        # Log warning if allocation would have exceeded deal size
+        if allocation == deal_size and self.min_amount is not None and self.min_amount > deal_size:
+            logger.warning(f"Min allocation (${self.min_amount:,.2f}) exceeds deal size (${deal_size:,.2f}). Capped allocation at deal size.")
         
         return allocation
     

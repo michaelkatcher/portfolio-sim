@@ -47,7 +47,7 @@ EXCEL = {
     'HEADER_COLOR_DARK': '4472C4',
     'DATE_FORMAT': 'yyyy-mm-dd',
     'PERCENT_FORMAT': '0.00%',
-    'CURRENCY_FORMAT': '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)',
+    'CURRENCY_FORMAT': '"$"#,##0_);("$"#,##0);"-"',
     'COLUMN_WIDTHS': {
         'TRANSACTION_DATE': 15,
         'FUNDED_ID': 15,
