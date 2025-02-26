@@ -624,11 +624,11 @@ def _create_portfolio_scenario_sheet(wb, portfolio):
             # Before the final "return ws" statement
 
             # Set column widths for Portfolio History columns
-            ws.column_dimensions['D'].width = 15  # Date
-            ws.column_dimensions['E'].width = 25  # Funded
-            ws.column_dimensions['F'].width = 25  # Balance
-            ws.column_dimensions['G'].width = 25
-            ws.column_dimensions['H'].width = 25
+            ws.column_dimensions['D'].width = 12  # Date
+            ws.column_dimensions['E'].width = 15  # Funded
+            ws.column_dimensions['F'].width = 15  # Balance
+            ws.column_dimensions['G'].width = 15
+            ws.column_dimensions['H'].width = 15
 
             # Add Portfolio History header (merged across columns D-h)
             history_header_row = 3
