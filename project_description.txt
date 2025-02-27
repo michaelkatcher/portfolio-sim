@@ -1,59 +1,85 @@
-Goal:
-- Building a portfolio simulator for a merchant cash advance funder in Python
+# MCA Portfolio Simulator Project Description
 
-Input Data:
-- Our inputs are the historical list of funded deals and their performance to date. 
+## Project Overview
+The MCA Portfolio Simulator is a Python-based tool for simulating merchant cash advance (MCA) investment portfolios based on historical deal performance. The simulator allows users to apply various selection criteria, allocation policies, and fee structures to evaluate potential investment strategies using actual historical data.
 
-Features:
-- Select a subset of deals based on a number of different criteria (deal product type, deal grade, deal size, deal vintage) 
-- Given an allocation policy, generate a series of cashflows that would flow from this subset based on historical performance. Allocation policy ex: portfolio takes 25% of each deal with a minimum of $100,000 per deal and a maximum of $1,500,000 per deals, so: MAX(100000,MIN(1500000,0.25*DealSize))
-- Calculate the performance of this portfolio of cashflows
-- Add management fees to the portfolio and calculate the post fee performance (i.e. a servicing fee of 2% of every incoming cashflow on a deal after principal repayment). This will be generated as an additional line item in cashflows
+## Current Functionality
 
-Output:
-- An Excel file with the following tabs:
- (1) 'Portfolio Scenario' - Lays out all of the selection criteria, fees, etc. for the portfolio
- (2) 'Cashflows' - A list of each individual cashflow in the portfolio
- (3) 'Deals' - A list of each individual deal in the portfolio
- (4) 'Analysis' - Calculation of IRR and MOIC for the portfolio as a whole and for each monthly vintage (a vintage is any deal that was funded in a given month)
- 
-Input Data Detail:
+### Core Components
+- **Data Loading**: Loads historical deal and payment data from CSV files
+- **Deal Selection**: Filters deals based on various criteria including deal size, vintage period, and product type
+- **Portfolio Simulation**: Applies allocation policies to selected deals and simulates cashflows
+- **Fee Application**: Calculates management fees based on configurable fee structures
+- **Performance Metrics**: Calculates IRR, MOIC, and other performance metrics for the portfolio
+- **Excel Export**: Generates formatted Excel workbooks with portfolio analysis results
 
-File #1: payments.csv
-Columns - Explanation
-Vintage - The year and quarter that a deal was funded (i.e. 2024-Q1)
-Vintage-M - The year and month a deal was funded  (i.e. 2024-01)
-Funded ID - The unique identifier for a deal
-Funded Date - The date a deal was first funded
-Transaction Date - The date of a given cashflow
-Transaction Amount - The amount of a given cashflow
-Libertas Transaction Amount - Can ignore this column; we won't be using this for now
-Transaction Description - The cashflow type; meaning of various types listed below
-Deal Size
-Product
+### Command-line Interface
+The simulator can be run from the command line with various parameters:
+- Deal selection parameters (size, vintage, product types)
+- Allocation policy parameters (percentage, minimum/maximum allocation)
+- Fee structure parameters
+- Output file configuration
+- Logging options
 
-Transaction Description Types:
-Initial cash outlay - The initial funding of a deal, plus commissions
-Merchant remittance - An incoming cashflow from a merchant on a deal
-Management fee revenue - Can ignore this column; we won't be using this for now
-Renewal or discounted payoff adjustment - An incoming cashflow from a merchant on a deal
-Refund - An incoming cashflow from a merchant on a deal
+### File Organization
+- All file paths are now relative to the script directory, not the working directory
+- Input data is stored in a 'raw_data' subdirectory
+- Output files are saved to a configurable output directory
+- Logs are saved to a 'logs' directory with customizable filenames
 
-File #2: data.csv
-Rows - Explanation
-Row 1 - This is a 'category' column. Each column can be one of a couple different categories. You can ignore Row #1
-Row 2 - This is the column name
-Rows 3 to X - These are the individual line items for each unique deal
+### Excel Integration
+- An Excel workbook with VBA integration allows running the simulator directly from Excel
+- Users can set parameters through form controls and worksheet cells
+- A unique identifier is generated for each run to correlate output files with logs
+- The Excel interface handles validation, execution, and result management
 
-Columns - Explanation [Note: this file has many dozens of columns; ignore all columns not explained below]
-Funded ID - The unique identifier for a deal
-Product - Internal product type for a given deal
-Initial Funding Date - The date that a deal was funded
-Credit_Tier - The deal grade
-Total Original Balance - The funded amount for a deal, like the deal principal
-Total Original RTR - The total amount the merchant owes on the deal
-Total Actual Payback Amount - The total amount of cash the merchant paid back on the deal
-Total Amount Carried Over Into New Deal - The total amount of the deal that was rolled into a new deal
-Past Due Amount - The total amount expected to be collected to date on a deal less the total amount actually collected
-Total Principal Net Charge Off - The total amount of principal charged off on a deal net of any recoveries
+## Technical Details
 
+### Data Pipeline
+1. **Input**: Historical deal and payment data CSV files
+2. **Processing**:
+   - Deal selection based on criteria
+   - Allocation calculation based on policy
+   - Cashflow simulation based on historical performance
+   - Fee calculation based on fee structure
+3. **Output**: Excel workbook with multiple worksheets containing:
+   - Portfolio scenario details
+   - Complete list of cashflows
+   - Deal allocations
+   - Performance metrics (IRR, MOIC, etc.)
+
+### File Path Management
+The simulator now correctly handles file paths relative to the script directory:
+- Input data files are loaded from the script's 'raw_data' subdirectory
+- Output files are saved to a configurable directory (defaulting to 'output')
+- Log files are saved to the script's 'logs' subdirectory
+
+### Logging
+- Configurable logging to both console and file
+- Log files can be named with a custom identifier to correlate with output files
+- Detailed logging of performance metrics and processing steps
+
+### Performance Considerations
+- The Excel export process is significantly slower when running through VBA/WSL compared to direct terminal execution
+- Optimizations have been made to the Excel exporter to improve performance
+
+## Recent Improvements
+- Fixed file path handling to work consistently regardless of working directory
+- Added support for custom log file naming
+- Implemented proper allocation size limits (preventing allocations larger than deal size)
+- Updated Excel formatting to remove decimal places in currency fields
+- Fixed recalculation of initial cash outlays to include commissions
+- Improved error handling and validation throughout the codebase
+- Added VBA integration for Excel-based execution and management
+
+## Current Limitations
+- The Excel export process has performance limitations when run via VBA through WSL
+- Some transaction types may not be properly handled in all scenarios
+- The portfolio simulator uses a simplified model of MCA performance that may not capture all real-world complexities
+
+## Future Development Directions
+- Further performance optimizations for Excel export
+- Additional portfolio simulation features and metrics
+- Enhanced visualization options for portfolio analysis
+- Multi-portfolio comparison tools
+- Integration with financial planning tools
